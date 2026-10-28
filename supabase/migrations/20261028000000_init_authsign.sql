@@ -348,6 +348,7 @@ on conflict (id) do update set
   file_size_limit = 15728640,
   allowed_mime_types = array['application/pdf'];
 
+drop policy if exists "Authenticated users can upload to their org documents" on storage.objects;
 create policy "Authenticated users can upload to their org documents"
   on storage.objects for insert
   with check (
@@ -355,6 +356,7 @@ create policy "Authenticated users can upload to their org documents"
     and auth.uid() is not null
   );
 
+drop policy if exists "Org members can read their documents" on storage.objects;
 create policy "Org members can read their documents"
   on storage.objects for select
   using (
