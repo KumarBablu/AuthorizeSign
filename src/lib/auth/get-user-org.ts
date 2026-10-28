@@ -1,3 +1,5 @@
+import { cookies } from 'next/headers';
+import { devDb } from '@/lib/db/dev-store';
 import { createClient } from '@/lib/db/supabase-server';
 import type { MemberRole } from '@/types/database.types';
 
@@ -12,8 +14,23 @@ export interface UserOrgContext {
 /**
  * Retrieves the current authenticated user and their active organization membership.
  * If user has no organization yet, creates an initial organization for them with 'owner' role.
+ * Includes local dev/demo mode fallback for offline evaluation.
  */
 export async function getUserOrgContext(): Promise<UserOrgContext | null> {
+  const cookieStore = await cookies();
+  const devCookie = cookieStore.get('authsign_dev_user')?.value;
+
+  // In offline dev mode or when demo cookie is set
+  if (devCookie || devDb.isDevMode()) {
+    return {
+      userId: 'dev-user-001',
+      userEmail: devCookie || 'demo@authsign.local',
+      organizationId: 'dev-org-001',
+      organizationName: 'AuthSign Demo Workspace',
+      role: 'owner',
+    };
+  }
+
   const supabase = await createClient();
 
   const {

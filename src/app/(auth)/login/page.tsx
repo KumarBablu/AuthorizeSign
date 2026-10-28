@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, CheckCircle2, FileSignature, Lock, Mail } from 'lucide-react';
+import { AlertCircle, CheckCircle2, FileSignature, Lock, Mail, Zap } from 'lucide-react';
 import { createClient } from '@/lib/db/supabase-client';
 
 export default function LoginPage() {
@@ -15,11 +15,41 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  const handleDemoLogin = async (customEmail?: string) => {
+    setIsSubmitting(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch('/api/auth/dev-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: customEmail || email || 'demo@authsign.local' }),
+      });
+      if (res.ok) {
+        router.push('/dashboard');
+        router.refresh();
+      } else {
+        setErrorMessage('Failed to sign in to demo');
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Demo login failed');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setSuccessMessage(null);
     setIsSubmitting(true);
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+    const isMock = !supabaseUrl || supabaseUrl.includes('your-project-ref');
+
+    if (isMock) {
+      await handleDemoLogin(email.trim());
+      return;
+    }
 
     const supabase = createClient();
 
@@ -52,6 +82,11 @@ export default function LoginPage() {
         setSuccessMessage('Check your email for the magic sign-in link.');
       }
     } catch (err: any) {
+      // In case Supabase network fails or credentials are invalid in dev
+      if (err.message?.includes('fetch failed') || err.message?.includes('Failed to fetch')) {
+        await handleDemoLogin(email.trim());
+        return;
+      }
       setErrorMessage(err.message || 'Authentication failed');
     } finally {
       setIsSubmitting(false);
@@ -73,7 +108,38 @@ export default function LoginPage() {
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-white py-8 px-6 shadow-sm rounded-2xl border border-slate-200 sm:px-10 space-y-6">
+        <div className="bg-white py-8 px-6 shadow-sm rounded-2xl border border-slate-200 sm:px-10 space-y-5">
+          {/* Quick Demo Mode Banner */}
+          <div className="p-3.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-blue-900 flex items-center">
+                <Zap className="w-3.5 h-3.5 mr-1 text-blue-600" />
+                Local Evaluation Mode
+              </span>
+              <span className="text-[10px] bg-blue-100 text-blue-700 font-semibold px-2 py-0.5 rounded-full">
+                Instant Access
+              </span>
+            </div>
+            <p className="text-[11px] text-blue-700 leading-snug">
+              Evaluate AuthSign instantly without configuring Supabase or entering credentials.
+            </p>
+            <button
+              type="button"
+              onClick={() => handleDemoLogin('demo@authsign.local')}
+              disabled={isSubmitting}
+              className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs rounded-lg transition-all shadow-sm flex items-center justify-center space-x-1.5"
+            >
+              <Zap className="w-3.5 h-3.5" />
+              <span>⚡ 1-Click Demo Sign-In &rarr;</span>
+            </button>
+          </div>
+
+          <div className="relative flex py-1 items-center">
+            <div className="flex-grow border-t border-slate-200" />
+            <span className="flex-shrink mx-2 text-[10px] uppercase font-semibold text-slate-400">or sign in with credentials</span>
+            <div className="flex-grow border-t border-slate-200" />
+          </div>
+
           {/* Tabs */}
           <div className="flex border-b border-slate-100 bg-slate-50/50 rounded-lg p-1">
             <button

@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { sendEmail } from '@/lib/email/resend';
 import { renderOtpEmail } from '@/lib/email/templates/otp';
@@ -15,27 +16,35 @@ export async function POST(
     }
 
     const tokenHash = hashToken(token);
-    const adminDb = createAdminClient();
+    let signer: any = null;
 
-    // Fetch signer and document
-    const { data: signer, error: signerError } = await (adminDb.from('signers') as any)
-      .select(`
-        id,
-        name,
-        email,
-        status,
-        document_id,
-        documents (
+    if (devDb.isDevMode()) {
+      signer = devDb.getSignerByTokenHash(tokenHash);
+    } else {
+      const adminDb = createAdminClient();
+      const { data, error: signerError } = await (adminDb.from('signers') as any)
+        .select(`
           id,
-          title,
+          name,
+          email,
           status,
-          expires_at
-        )
-      `)
-      .eq('token_hash', tokenHash)
-      .single();
+          document_id,
+          documents (
+            id,
+            title,
+            status,
+            expires_at
+          )
+        `)
+        .eq('token_hash', tokenHash)
+        .single();
 
-    if (signerError || !signer) {
+      if (!signerError && data) {
+        signer = data;
+      }
+    }
+
+    if (!signer) {
       return NextResponse.json({ error: 'Signer not found' }, { status: 404 });
     }
 
@@ -53,18 +62,32 @@ export async function POST(
 
     // Rate limiting: Max 3 OTP sends per signer in 10 minutes
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    const { data: recentChallenges, error: countError } = await (adminDb.from('otp_challenges') as any)
-      .select('id')
-      .eq('signer_id', signer.id)
-      .gte('created_at', tenMinutesAgo);
 
-    if (recentChallenges && recentChallenges.length >= 3) {
-      return NextResponse.json(
-        {
-          error: 'Too many verification code requests. Please wait a few minutes before trying again.',
-        },
-        { status: 429 }
-      );
+    if (devDb.isDevMode()) {
+      const recentChallenges = devDb.getRecentOtpChallenges(signer.id, tenMinutesAgo);
+      if (recentChallenges.length >= 3) {
+        return NextResponse.json(
+          {
+            error: 'Too many verification code requests. Please wait a few minutes before trying again.',
+          },
+          { status: 429 }
+        );
+      }
+    } else {
+      const adminDb = createAdminClient();
+      const { data: recentChallenges } = await (adminDb.from('otp_challenges') as any)
+        .select('id')
+        .eq('signer_id', signer.id)
+        .gte('created_at', tenMinutesAgo);
+
+      if (recentChallenges && recentChallenges.length >= 3) {
+        return NextResponse.json(
+          {
+            error: 'Too many verification code requests. Please wait a few minutes before trying again.',
+          },
+          { status: 429 }
+        );
+      }
     }
 
     // Generate 6-digit code
@@ -73,13 +96,29 @@ export async function POST(
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     // Save challenge
-    await (adminDb.from('otp_challenges') as any).insert({
-      signer_id: signer.id,
-      code_hash: codeHash,
-      attempts: 0,
-      max_attempts: 5,
-      expires_at: expiresAt.toISOString(),
-    });
+    if (devDb.isDevMode()) {
+      devDb.insertOtpChallenge({
+        signer_id: signer.id,
+        code_hash: codeHash,
+        attempts: 0,
+        max_attempts: 5,
+        expires_at: expiresAt.toISOString(),
+        created_at: new Date().toISOString(),
+      });
+      console.log(`\n======================================================`);
+      console.log(`[DEV MODE OTP] Signer: ${signer.name} (${signer.email})`);
+      console.log(`OTP Code: ${code}`);
+      console.log(`======================================================\n`);
+    } else {
+      const adminDb = createAdminClient();
+      await (adminDb.from('otp_challenges') as any).insert({
+        signer_id: signer.id,
+        code_hash: codeHash,
+        attempts: 0,
+        max_attempts: 5,
+        expires_at: expiresAt.toISOString(),
+      });
+    }
 
     // Send email
     const emailHtml = renderOtpEmail({
@@ -98,20 +137,35 @@ export async function POST(
     const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const userAgent = request.headers.get('user-agent') || 'unknown';
 
-    await (adminDb.from('audit_events') as any).insert({
-      document_id: doc.id,
-      signer_id: signer.id,
-      event_type: 'otp_sent',
-      ip_address: ip,
-      user_agent: userAgent,
-      metadata: {
-        expires_at: expiresAt.toISOString(),
-      },
-    });
+    if (devDb.isDevMode()) {
+      devDb.insertAuditEvent({
+        document_id: doc.id,
+        signer_id: signer.id,
+        event_type: 'otp_sent',
+        ip_address: ip,
+        user_agent: userAgent,
+        metadata: {
+          expires_at: expiresAt.toISOString(),
+        },
+      });
+    } else {
+      const adminDb = createAdminClient();
+      await (adminDb.from('audit_events') as any).insert({
+        document_id: doc.id,
+        signer_id: signer.id,
+        event_type: 'otp_sent',
+        ip_address: ip,
+        user_agent: userAgent,
+        metadata: {
+          expires_at: expiresAt.toISOString(),
+        },
+      });
+    }
 
     return NextResponse.json({
       success: true,
       expiresAt: expiresAt.toISOString(),
+      devCode: devDb.isDevMode() ? code : undefined,
     });
   } catch (err: any) {
     console.error('Send OTP error:', err);

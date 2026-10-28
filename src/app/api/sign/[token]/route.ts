@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { hashToken, maskEmail } from '@/lib/security/crypto';
 
@@ -13,36 +14,44 @@ export async function GET(
     }
 
     const tokenHash = hashToken(token);
-    const adminDb = createAdminClient();
+    let signer: any = null;
 
-    // Query signer by token_hash joined with document and organization
-    const { data: signer, error: signerError } = await (adminDb.from('signers') as any)
-      .select(`
-        id,
-        name,
-        email,
-        order_index,
-        status,
-        verified_at,
-        signed_at,
-        document_id,
-        documents (
+    if (devDb.isDevMode()) {
+      signer = devDb.getSignerByTokenHash(tokenHash);
+    } else {
+      const adminDb = createAdminClient();
+      const { data, error: signerError } = await (adminDb.from('signers') as any)
+        .select(`
           id,
-          title,
+          name,
+          email,
+          order_index,
           status,
-          signing_order,
-          expires_at,
-          signed_sha256,
-          organization_id,
-          organizations (
-            name
+          verified_at,
+          signed_at,
+          document_id,
+          documents (
+            id,
+            title,
+            status,
+            signing_order,
+            expires_at,
+            signed_sha256,
+            organization_id,
+            organizations (
+              name
+            )
           )
-        )
-      `)
-      .eq('token_hash', tokenHash)
-      .single();
+        `)
+        .eq('token_hash', tokenHash)
+        .single();
 
-    if (signerError || !signer) {
+      if (!signerError && data) {
+        signer = data;
+      }
+    }
+
+    if (!signer) {
       return NextResponse.json(
         { error: 'Invalid or unknown signing link.' },
         { status: 404 }
@@ -58,18 +67,20 @@ export async function GET(
     const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const userAgent = request.headers.get('user-agent') || 'unknown';
 
-    await (adminDb.from('audit_events') as any).insert({
-      document_id: doc.id,
-      signer_id: signer.id,
-      event_type: 'link_opened',
-      ip_address: ip,
-      user_agent: userAgent,
-      metadata: {
-        signer_email: signer.email,
-        signer_status: signer.status,
-        document_status: doc.status,
-      },
-    });
+    if (devDb.isDevMode()) {
+      devDb.insertAuditEvent({
+        document_id: doc.id,
+        signer_id: signer.id,
+        event_type: 'link_opened',
+        ip_address: ip,
+        user_agent: userAgent,
+        metadata: {
+          signer_email: signer.email,
+          signer_status: signer.status,
+          document_status: doc.status,
+        },
+      });
+    }
 
     // STATE 1: DOCUMENT COMPLETED (Show green checkmark any time, any day)
     if (doc.status === 'completed') {
@@ -105,14 +116,22 @@ export async function GET(
     }
 
     // STATE 4: SEQUENTIAL BLOCKING CHECK
-    // If sequential, check if all signers with lower order_index have signed
     if (doc.signing_order === 'sequential' && signer.order_index > 0) {
-      const { data: previousSigners } = await (adminDb.from('signers') as any)
-        .select('name, status, order_index')
-        .eq('document_id', doc.id)
-        .lt('order_index', signer.order_index);
+      let previousSigners: any[] = [];
+      if (devDb.isDevMode()) {
+        previousSigners = devDb
+          .getSignersForDocument(doc.id)
+          .filter((s) => s.order_index < signer.order_index);
+      } else {
+        const adminDb = createAdminClient();
+        const { data } = await (adminDb.from('signers') as any)
+          .select('name, status, order_index')
+          .eq('document_id', doc.id)
+          .lt('order_index', signer.order_index);
+        previousSigners = data || [];
+      }
 
-      const unsignedPrev = (previousSigners || []).find((s: any) => s.status !== 'signed');
+      const unsignedPrev = previousSigners.find((s) => s.status !== 'signed');
       if (unsignedPrev) {
         return NextResponse.json({
           state: 'blocked',

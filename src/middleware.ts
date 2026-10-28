@@ -13,6 +13,13 @@ export async function middleware(request: NextRequest) {
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const hasLiveSupabase = supabaseUrl && !supabaseUrl.includes('your-project-ref');
+  const devCookie = request.cookies.get('authsign_dev_user')?.value;
+
+  // In offline dev mode or with demo cookie, allow access without live Supabase login
+  if (!hasLiveSupabase || devCookie) {
+    return supabaseResponse;
+  }
 
   if (supabaseUrl && supabaseAnonKey) {
     const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {

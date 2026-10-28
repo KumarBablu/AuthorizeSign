@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { sendEmail } from '@/lib/email/resend';
 import { renderCompletedEmail } from '@/lib/email/templates/completed';
@@ -27,38 +28,46 @@ export async function POST(
     }
 
     const tokenHash = hashToken(token);
-    const adminDb = createAdminClient();
+    let signer: any = null;
 
-    // Fetch signer and document with fields and all document signers
-    const { data: signer, error: signerError } = await (adminDb.from('signers') as any)
-      .select(`
-        id,
-        name,
-        email,
-        order_index,
-        verified_at,
-        status,
-        document_id,
-        documents (
+    if (devDb.isDevMode()) {
+      signer = devDb.getSignerByTokenHash(tokenHash);
+    } else {
+      const adminDb = createAdminClient();
+      const { data, error: signerError } = await (adminDb.from('signers') as any)
+        .select(`
           id,
-          title,
+          name,
+          email,
+          order_index,
+          verified_at,
           status,
-          signing_order,
-          original_storage_path,
-          original_sha256,
-          signed_storage_path,
-          expires_at,
-          organization_id,
-          created_by,
-          organizations (
-            name
+          document_id,
+          documents (
+            id,
+            title,
+            status,
+            signing_order,
+            original_storage_path,
+            original_sha256,
+            signed_storage_path,
+            expires_at,
+            organization_id,
+            created_by,
+            organizations (
+              name
+            )
           )
-        )
-      `)
-      .eq('token_hash', tokenHash)
-      .single();
+        `)
+        .eq('token_hash', tokenHash)
+        .single();
 
-    if (signerError || !signer) {
+      if (!signerError && data) {
+        signer = data;
+      }
+    }
+
+    if (!signer) {
       return NextResponse.json({ error: 'Signer not found' }, { status: 404 });
     }
 
@@ -100,12 +109,20 @@ export async function POST(
 
     // Check sequential signing order
     if (doc.signing_order === 'sequential' && signer.order_index > 0) {
-      const { data: priorSigners } = await (adminDb.from('signers') as any)
-        .select('name, status')
-        .eq('document_id', doc.id)
-        .lt('order_index', signer.order_index);
+      let hasUnsignedPrior: any = null;
+      if (devDb.isDevMode()) {
+        const prior = devDb.getSignersForDocument(doc.id).filter((s) => s.order_index < signer.order_index);
+        hasUnsignedPrior = prior.find((s) => s.status !== 'signed');
+      } else {
+        const adminDb = createAdminClient();
+        const { data: priorSigners } = await (adminDb.from('signers') as any)
+          .select('name, status')
+          .eq('document_id', doc.id)
+          .lt('order_index', signer.order_index);
 
-      const hasUnsignedPrior = (priorSigners || []).find((s: any) => s.status !== 'signed');
+        hasUnsignedPrior = (priorSigners || []).find((s: any) => s.status !== 'signed');
+      }
+
       if (hasUnsignedPrior) {
         return NextResponse.json(
           { error: `Previous signer (${hasUnsignedPrior.name}) must sign before you can submit.` },
@@ -115,13 +132,20 @@ export async function POST(
     }
 
     // Fetch fields assigned to this signer
-    const { data: signerFields } = await (adminDb.from('fields') as any)
-      .select('id, type, page, x, y, width, height')
-      .eq('document_id', doc.id)
-      .eq('signer_id', signer.id);
+    let signerFields: any[] = [];
+    if (devDb.isDevMode()) {
+      signerFields = devDb.getFieldsForSigner(doc.id, signer.id);
+    } else {
+      const adminDb = createAdminClient();
+      const { data } = await (adminDb.from('fields') as any)
+        .select('id, type, page, x, y, width, height')
+        .eq('document_id', doc.id)
+        .eq('signer_id', signer.id);
+      signerFields = data || [];
+    }
 
-    const sigFields = (signerFields || []).filter((f: any) => f.type === 'signature');
-    const dateFields = (signerFields || []).filter((f: any) => f.type === 'date');
+    const sigFields = signerFields.filter((f: any) => f.type === 'signature');
+    const dateFields = signerFields.filter((f: any) => f.type === 'date');
 
     // Download current PDF from storage (or original if first signer)
     const currentPdfPath = doc.signed_storage_path || doc.original_storage_path;
@@ -155,48 +179,84 @@ export async function POST(
     const userAgent = request.headers.get('user-agent') || 'unknown';
 
     // Insert into signatures table for each signature field
-    for (const f of sigFields) {
-      await (adminDb.from('signatures') as any).insert({
+    if (devDb.isDevMode()) {
+      for (const f of sigFields) {
+        devDb.insertSignature({
+          document_id: doc.id,
+          signer_id: signer.id,
+          field_id: f.id,
+          method: validated.data.signatureMethod,
+          ip_address: ip,
+          user_agent: userAgent,
+          consent_text: 'I agree to sign this document electronically and understand this signature is legally binding.',
+          signed_at: nowIso,
+        });
+      }
+      devDb.updateSigner(signer.id, {
+        status: 'signed',
+        signed_at: nowIso,
+      });
+      devDb.insertAuditEvent({
         document_id: doc.id,
         signer_id: signer.id,
-        field_id: f.id,
-        method: validated.data.signatureMethod,
+        event_type: 'signed',
         ip_address: ip,
         user_agent: userAgent,
-        consent_text: 'I agree to sign this document electronically and understand this signature is legally binding.',
-        signed_at: nowIso,
+        metadata: {
+          method: validated.data.signatureMethod,
+          font: validated.data.typedFont || null,
+          signed_at: nowIso,
+        },
+      });
+    } else {
+      const adminDb = createAdminClient();
+      for (const f of sigFields) {
+        await (adminDb.from('signatures') as any).insert({
+          document_id: doc.id,
+          signer_id: signer.id,
+          field_id: f.id,
+          method: validated.data.signatureMethod,
+          ip_address: ip,
+          user_agent: userAgent,
+          consent_text: 'I agree to sign this document electronically and understand this signature is legally binding.',
+          signed_at: nowIso,
+        });
+      }
+
+      await (adminDb.from('signers') as any)
+        .update({
+          status: 'signed',
+          signed_at: nowIso,
+        })
+        .eq('id', signer.id);
+
+      await (adminDb.from('audit_events') as any).insert({
+        document_id: doc.id,
+        signer_id: signer.id,
+        event_type: 'signed',
+        ip_address: ip,
+        user_agent: userAgent,
+        metadata: {
+          method: validated.data.signatureMethod,
+          font: validated.data.typedFont || null,
+          signed_at: nowIso,
+        },
       });
     }
 
-    // Mark this signer as signed
-    await (adminDb.from('signers') as any)
-      .update({
-        status: 'signed',
-        signed_at: nowIso,
-      })
-      .eq('id', signer.id);
-
-    // Log audit event: signed
-    await (adminDb.from('audit_events') as any).insert({
-      document_id: doc.id,
-      signer_id: signer.id,
-      event_type: 'signed',
-      ip_address: ip,
-      user_agent: userAgent,
-      metadata: {
-        method: validated.data.signatureMethod,
-        font: validated.data.typedFont || null,
-        signed_at: nowIso,
-      },
-    });
-
     // Check if ALL signers on this document are now signed
-    const { data: allSigners } = await (adminDb.from('signers') as any)
-      .select('id, name, email, order_index, status, signed_at')
-      .eq('document_id', doc.id)
-      .order('order_index', { ascending: true });
+    let totalSigners: any[] = [];
+    if (devDb.isDevMode()) {
+      totalSigners = devDb.getSignersForDocument(doc.id);
+    } else {
+      const adminDb = createAdminClient();
+      const { data: allSigners } = await (adminDb.from('signers') as any)
+        .select('id, name, email, order_index, status, signed_at')
+        .eq('document_id', doc.id)
+        .order('order_index', { ascending: true });
+      totalSigners = allSigners || [];
+    }
 
-    const totalSigners = allSigners || [];
     const allCompleted = totalSigners.every((s: any) => s.status === 'signed');
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
 
@@ -227,35 +287,55 @@ export async function POST(
       await uploadPdfToStorage(completedStoragePath, certifiedPdfBytes);
 
       // Update document record to completed
-      await (adminDb.from('documents') as any)
-        .update({
+      if (devDb.isDevMode()) {
+        devDb.updateDocument(doc.id, {
           status: 'completed',
           signed_sha256: finalSha256,
           signed_storage_path: completedStoragePath,
           updated_at: nowIso,
-        })
-        .eq('id', doc.id);
+        });
+        devDb.insertAuditEvent({
+          document_id: doc.id,
+          event_type: 'completed',
+          ip_address: ip,
+          user_agent: userAgent,
+          metadata: {
+            signed_sha256: finalSha256,
+            total_signers: totalSigners.length,
+            completed_at: nowIso,
+          },
+        });
+      } else {
+        const adminDb = createAdminClient();
+        await (adminDb.from('documents') as any)
+          .update({
+            status: 'completed',
+            signed_sha256: finalSha256,
+            signed_storage_path: completedStoragePath,
+            updated_at: nowIso,
+          })
+          .eq('id', doc.id);
 
-      // Log audit event: completed
-      await (adminDb.from('audit_events') as any).insert({
-        document_id: doc.id,
-        event_type: 'completed',
-        ip_address: ip,
-        user_agent: userAgent,
-        metadata: {
-          signed_sha256: finalSha256,
-          total_signers: totalSigners.length,
-          completed_at: nowIso,
-        },
-      });
+        await (adminDb.from('audit_events') as any).insert({
+          document_id: doc.id,
+          event_type: 'completed',
+          ip_address: ip,
+          user_agent: userAgent,
+          metadata: {
+            signed_sha256: finalSha256,
+            total_signers: totalSigners.length,
+            completed_at: nowIso,
+          },
+        });
+      }
 
       // Email completed document to all signers
-      const downloadUrl = `${appUrl}/api/documents/${doc.id}/download?type=signed`;
+      const downloadUrl = `/api/documents/${doc.id}/download?type=signed`;
       for (const s of totalSigners) {
         const completedEmailHtml = renderCompletedEmail({
           recipientName: s.name,
           documentTitle: doc.title,
-          downloadUrl,
+          downloadUrl: `${appUrl}${downloadUrl}`,
           completedAt: formattedDate,
         });
 
@@ -277,12 +357,20 @@ export async function POST(
       const partialPath = `${doc.organization_id}/${doc.id}/in_progress.pdf`;
       await uploadPdfToStorage(partialPath, stampedPdfBytes);
 
-      await (adminDb.from('documents') as any)
-        .update({
+      if (devDb.isDevMode()) {
+        devDb.updateDocument(doc.id, {
           signed_storage_path: partialPath,
           updated_at: nowIso,
-        })
-        .eq('id', doc.id);
+        });
+      } else {
+        const adminDb = createAdminClient();
+        await (adminDb.from('documents') as any)
+          .update({
+            signed_storage_path: partialPath,
+            updated_at: nowIso,
+          })
+          .eq('id', doc.id);
+      }
 
       // If sequential order, dispatch invitation to the next signer
       if (doc.signing_order === 'sequential') {
@@ -293,13 +381,26 @@ export async function POST(
         if (nextSigner) {
           const nextToken = generateSignerToken();
           const nextTokenHash = hashToken(nextToken);
+          const nextSigningUrl = `${appUrl}/sign/${nextToken}`;
 
-          await (adminDb.from('signers') as any)
-            .update({ token_hash: nextTokenHash })
-            .eq('id', nextSigner.id);
+          if (devDb.isDevMode()) {
+            devDb.updateSigner(nextSigner.id, {
+              token_hash: nextTokenHash,
+              dev_signing_url: nextSigningUrl,
+            });
+          } else {
+            const adminDb = createAdminClient();
+            await (adminDb.from('signers') as any)
+              .update({ token_hash: nextTokenHash })
+              .eq('id', nextSigner.id);
+          }
 
           const diffDays = Math.max(1, Math.ceil((new Date(doc.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
-          const nextSigningUrl = `${appUrl}/sign/${nextToken}`;
+
+          console.log(`\n======================================================`);
+          console.log(`[SEQUENTIAL ADVANCEMENT] Next Signer: ${nextSigner.name} (${nextSigner.email})`);
+          console.log(`Signing Link: ${nextSigningUrl}`);
+          console.log(`======================================================\n`);
 
           const nextEmailHtml = renderInvitationEmail({
             signerName: nextSigner.name,

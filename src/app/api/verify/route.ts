@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { computeSha256Hex } from '@/lib/pdf/hash';
 import { validatePdfFile, validatePdfMagicBytes } from '@/lib/pdf/validator';
@@ -40,16 +41,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid or missing SHA-256 checksum' }, { status: 400 });
     }
 
-    const adminDb = createAdminClient();
+    let document: any = null;
 
-    // Query completed documents matching this signed_sha256
-    const { data: document, error } = await (adminDb.from('documents') as any)
-      .select('id, title, status, signed_sha256, updated_at, created_at')
-      .eq('signed_sha256', targetHash)
-      .eq('status', 'completed')
-      .single();
+    if (devDb.isDevMode()) {
+      document = devDb.findDocumentBySignedSha256(targetHash);
+    } else {
+      const adminDb = createAdminClient();
+      // Query completed documents matching this signed_sha256
+      const { data, error } = await (adminDb.from('documents') as any)
+        .select('id, title, status, signed_sha256, updated_at, created_at')
+        .eq('signed_sha256', targetHash)
+        .eq('status', 'completed')
+        .single();
 
-    if (error || !document) {
+      if (!error && data) {
+        document = data;
+      }
+    }
+
+    if (!document) {
       return NextResponse.json({
         verified: false,
         sha256: targetHash,

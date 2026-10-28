@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { hashOtp, hashToken, verifyHashTimingSafe } from '@/lib/security/crypto';
 import { otpVerifySchema } from '@/lib/validations/signer.schema';
@@ -20,15 +21,23 @@ export async function POST(
     }
 
     const tokenHash = hashToken(token);
-    const adminDb = createAdminClient();
+    let signer: any = null;
 
-    // Fetch signer and document
-    const { data: signer, error: signerError } = await (adminDb.from('signers') as any)
-      .select('id, document_id, status, documents(id, status, expires_at)')
-      .eq('token_hash', tokenHash)
-      .single();
+    if (devDb.isDevMode()) {
+      signer = devDb.getSignerByTokenHash(tokenHash);
+    } else {
+      const adminDb = createAdminClient();
+      const { data, error: signerError } = await (adminDb.from('signers') as any)
+        .select('id, document_id, status, documents(id, status, expires_at)')
+        .eq('token_hash', tokenHash)
+        .single();
 
-    if (signerError || !signer) {
+      if (!signerError && data) {
+        signer = data;
+      }
+    }
+
+    if (!signer) {
       return NextResponse.json({ error: 'Signer not found' }, { status: 404 });
     }
 
@@ -41,15 +50,26 @@ export async function POST(
     }
 
     // Fetch active challenge
-    const { data: challenge, error: challengeError } = await (adminDb.from('otp_challenges') as any)
-      .select('id, code_hash, attempts, max_attempts, expires_at, consumed_at')
-      .eq('signer_id', signer.id)
-      .is('consumed_at', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
+    let challenge: any = null;
 
-    if (challengeError || !challenge) {
+    if (devDb.isDevMode()) {
+      challenge = devDb.getActiveOtpChallenge(signer.id);
+    } else {
+      const adminDb = createAdminClient();
+      const { data, error: challengeError } = await (adminDb.from('otp_challenges') as any)
+        .select('id, code_hash, attempts, max_attempts, expires_at, consumed_at')
+        .eq('signer_id', signer.id)
+        .is('consumed_at', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (!challengeError && data) {
+        challenge = data;
+      }
+    }
+
+    if (!challenge) {
       return NextResponse.json(
         { error: 'No active verification code found. Please request a new code.' },
         { status: 400 }
@@ -79,9 +99,14 @@ export async function POST(
 
     // Increment attempts
     const newAttempts = challenge.attempts + 1;
-    await (adminDb.from('otp_challenges') as any)
-      .update({ attempts: newAttempts })
-      .eq('id', challenge.id);
+    if (devDb.isDevMode()) {
+      devDb.updateOtpChallenge(challenge.id, { attempts: newAttempts });
+    } else {
+      const adminDb = createAdminClient();
+      await (adminDb.from('otp_challenges') as any)
+        .update({ attempts: newAttempts })
+        .eq('id', challenge.id);
+    }
 
     // Verify hash with constant-time comparison
     const computedHash = hashOtp(signer.id, validated.data.code);
@@ -91,16 +116,30 @@ export async function POST(
       const remainingAttempts = challenge.max_attempts - newAttempts;
 
       // Log audit event: otp_failed
-      await (adminDb.from('audit_events') as any).insert({
-        document_id: doc.id,
-        signer_id: signer.id,
-        event_type: 'otp_failed',
-        ip_address: ip,
-        user_agent: userAgent,
-        metadata: {
-          remaining_attempts: remainingAttempts,
-        },
-      });
+      if (devDb.isDevMode()) {
+        devDb.insertAuditEvent({
+          document_id: doc.id,
+          signer_id: signer.id,
+          event_type: 'otp_failed',
+          ip_address: ip,
+          user_agent: userAgent,
+          metadata: {
+            remaining_attempts: remainingAttempts,
+          },
+        });
+      } else {
+        const adminDb = createAdminClient();
+        await (adminDb.from('audit_events') as any).insert({
+          document_id: doc.id,
+          signer_id: signer.id,
+          event_type: 'otp_failed',
+          ip_address: ip,
+          user_agent: userAgent,
+          metadata: {
+            remaining_attempts: remainingAttempts,
+          },
+        });
+      }
 
       return NextResponse.json(
         {
@@ -113,26 +152,40 @@ export async function POST(
 
     // Mark challenge consumed
     const nowIso = new Date().toISOString();
-    await (adminDb.from('otp_challenges') as any)
-      .update({ consumed_at: nowIso })
-      .eq('id', challenge.id);
+    if (devDb.isDevMode()) {
+      devDb.updateOtpChallenge(challenge.id, { consumed_at: nowIso });
+      devDb.updateSigner(signer.id, { verified_at: nowIso });
+      devDb.insertAuditEvent({
+        document_id: doc.id,
+        signer_id: signer.id,
+        event_type: 'otp_verified',
+        ip_address: ip,
+        user_agent: userAgent,
+        metadata: {
+          verified_at: nowIso,
+        },
+      });
+    } else {
+      const adminDb = createAdminClient();
+      await (adminDb.from('otp_challenges') as any)
+        .update({ consumed_at: nowIso })
+        .eq('id', challenge.id);
 
-    // Update signer verified_at
-    await (adminDb.from('signers') as any)
-      .update({ verified_at: nowIso })
-      .eq('id', signer.id);
+      await (adminDb.from('signers') as any)
+        .update({ verified_at: nowIso })
+        .eq('id', signer.id);
 
-    // Log audit event: otp_verified
-    await (adminDb.from('audit_events') as any).insert({
-      document_id: doc.id,
-      signer_id: signer.id,
-      event_type: 'otp_verified',
-      ip_address: ip,
-      user_agent: userAgent,
-      metadata: {
-        verified_at: nowIso,
-      },
-    });
+      await (adminDb.from('audit_events') as any).insert({
+        document_id: doc.id,
+        signer_id: signer.id,
+        event_type: 'otp_verified',
+        ip_address: ip,
+        user_agent: userAgent,
+        metadata: {
+          verified_at: nowIso,
+        },
+      });
+    }
 
     return NextResponse.json({
       success: true,

@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { downloadPdfFromStorage } from '@/lib/pdf/storage';
 import { hashToken } from '@/lib/security/crypto';
@@ -14,30 +15,38 @@ export async function GET(
     }
 
     const tokenHash = hashToken(token);
-    const adminDb = createAdminClient();
+    let signer: any = null;
 
-    // Fetch signer and document
-    const { data: signer, error: signerError } = await (adminDb.from('signers') as any)
-      .select(`
-        id,
-        order_index,
-        verified_at,
-        status,
-        document_id,
-        documents (
+    if (devDb.isDevMode()) {
+      signer = devDb.getSignerByTokenHash(tokenHash);
+    } else {
+      const adminDb = createAdminClient();
+      const { data, error: signerError } = await (adminDb.from('signers') as any)
+        .select(`
           id,
-          title,
+          order_index,
+          verified_at,
           status,
-          signing_order,
-          original_storage_path,
-          signed_storage_path,
-          expires_at
-        )
-      `)
-      .eq('token_hash', tokenHash)
-      .single();
+          document_id,
+          documents (
+            id,
+            title,
+            status,
+            signing_order,
+            original_storage_path,
+            signed_storage_path,
+            expires_at
+          )
+        `)
+        .eq('token_hash', tokenHash)
+        .single();
 
-    if (signerError || !signer) {
+      if (!signerError && data) {
+        signer = data;
+      }
+    }
+
+    if (!signer) {
       return NextResponse.json({ error: 'Invalid signer token' }, { status: 404 });
     }
 
@@ -70,12 +79,20 @@ export async function GET(
 
       // Check sequential signing order
       if (doc.signing_order === 'sequential' && signer.order_index > 0) {
-        const { data: priorSigners } = await (adminDb.from('signers') as any)
-          .select('status')
-          .eq('document_id', doc.id)
-          .lt('order_index', signer.order_index);
+        let hasUnsignedPrior = false;
+        if (devDb.isDevMode()) {
+          const prior = devDb.getSignersForDocument(doc.id).filter((s) => s.order_index < signer.order_index);
+          hasUnsignedPrior = prior.some((s) => s.status !== 'signed');
+        } else {
+          const adminDb = createAdminClient();
+          const { data: priorSigners } = await (adminDb.from('signers') as any)
+            .select('status')
+            .eq('document_id', doc.id)
+            .lt('order_index', signer.order_index);
 
-        const hasUnsignedPrior = (priorSigners || []).some((s: any) => s.status !== 'signed');
+          hasUnsignedPrior = (priorSigners || []).some((s: any) => s.status !== 'signed');
+        }
+
         if (hasUnsignedPrior) {
           return NextResponse.json(
             { error: 'Prior signers in sequence must complete signing before you can access this PDF.' },

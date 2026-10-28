@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 
 export async function GET(
@@ -13,9 +14,16 @@ export async function GET(
     }
 
     const { id } = await params;
-    const adminDb = createAdminClient();
 
-    // Query document ensuring it belongs to user's organization
+    if (devDb.isDevMode()) {
+      const doc = devDb.getDocumentById(id);
+      if (!doc) {
+        return NextResponse.json({ error: 'Document not found' }, { status: 404 });
+      }
+      return NextResponse.json({ document: doc });
+    }
+
+    const adminDb = createAdminClient();
     const { data: document, error: docError } = await adminDb
       .from('documents')
       .select(`
@@ -82,8 +90,12 @@ export async function DELETE(
     }
 
     const { id } = await params;
-    const adminDb = createAdminClient();
 
+    if (devDb.isDevMode()) {
+      return NextResponse.json({ success: true });
+    }
+
+    const adminDb = createAdminClient();
     const { error } = await adminDb
       .from('documents')
       .delete()

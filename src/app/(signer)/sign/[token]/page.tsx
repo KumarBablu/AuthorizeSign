@@ -86,6 +86,9 @@ export default function SignerFlowPage() {
         throw new Error(data.error || 'Failed to send verification code');
       }
       setOtpSentNotice(true);
+      if (data.devCode) {
+        setOtpCode(data.devCode);
+      }
     } catch (err: any) {
       setErrorMessage(err.message);
     } finally {

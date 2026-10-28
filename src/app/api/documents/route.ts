@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
+import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { createClient } from '@/lib/db/supabase-server';
 import { computeSha256Hex } from '@/lib/pdf/hash';
@@ -16,6 +17,11 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
+
+    if (devDb.isDevMode()) {
+      const documents = devDb.getDocuments(orgContext.organizationId, status || undefined);
+      return NextResponse.json({ documents });
+    }
 
     const supabase = await createClient();
     let query = (supabase.from('documents') as any)
@@ -114,28 +120,53 @@ export async function POST(request: NextRequest) {
     const originalSha256 = await computeSha256Hex(buffer);
     const expiresAt = new Date(Date.now() + validatedInput.data.expiryDays * 24 * 60 * 60 * 1000);
 
-    const adminDb = createAdminClient();
     const docId = crypto.randomUUID();
     const storagePath = `${orgContext.organizationId}/${docId}/original.pdf`;
 
     // Upload to private storage
     await uploadPdfToStorage(storagePath, buffer);
 
-    // Insert document record
+    const documentData = {
+      id: docId,
+      organization_id: orgContext.organizationId,
+      created_by: orgContext.userId,
+      title: validatedInput.data.title,
+      status: 'draft',
+      signing_order: validatedInput.data.signingOrder,
+      original_storage_path: storagePath,
+      original_sha256: originalSha256,
+      verification_method: validatedInput.data.verificationMethod,
+      signature_method: validatedInput.data.signatureMethod,
+      expires_at: expiresAt.toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    if (devDb.isDevMode()) {
+      devDb.insertDocument(documentData);
+      devDb.insertAuditEvent({
+        document_id: docId,
+        user_id: orgContext.userId,
+        event_type: 'document_created',
+        metadata: {
+          title: documentData.title,
+          original_sha256: originalSha256,
+          signing_order: documentData.signing_order,
+          expires_at: documentData.expires_at,
+        },
+      });
+
+      return NextResponse.json({
+        documentId: docId,
+        title: documentData.title,
+        originalSha256,
+        expiresAt: documentData.expires_at,
+      });
+    }
+
+    const adminDb = createAdminClient();
     const { data: document, error: docError } = await (adminDb.from('documents') as any)
-      .insert({
-        id: docId,
-        organization_id: orgContext.organizationId,
-        created_by: orgContext.userId,
-        title: validatedInput.data.title,
-        status: 'draft',
-        signing_order: validatedInput.data.signingOrder,
-        original_storage_path: storagePath,
-        original_sha256: originalSha256,
-        verification_method: validatedInput.data.verificationMethod,
-        signature_method: validatedInput.data.signatureMethod,
-        expires_at: expiresAt.toISOString(),
-      })
+      .insert(documentData)
       .select()
       .single();
 
