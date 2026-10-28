@@ -22,6 +22,8 @@
 # Local env files
 .env*.local
 .env
+.storage/
+.storage
 
 # Vercel
 .vercel
