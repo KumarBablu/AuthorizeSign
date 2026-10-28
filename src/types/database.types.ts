@@ -49,6 +49,7 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [];
       };
       members: {
         Row: {
@@ -75,6 +76,14 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: 'members_organization_id_fkey';
+            columns: ['organization_id'];
+            referencedRelation: 'organizations';
+            referencedColumns: ['id'];
+          }
+        ];
       };
       documents: {
         Row: {
@@ -134,6 +143,14 @@ export interface Database {
           created_at?: string;
           updated_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: 'documents_organization_id_fkey';
+            columns: ['organization_id'];
+            referencedRelation: 'organizations';
+            referencedColumns: ['id'];
+          }
+        ];
       };
       signers: {
         Row: {
@@ -172,6 +189,14 @@ export interface Database {
           signed_at?: string | null;
           created_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: 'signers_document_id_fkey';
+            columns: ['document_id'];
+            referencedRelation: 'documents';
+            referencedColumns: ['id'];
+          }
+        ];
       };
       fields: {
         Row: {
@@ -210,6 +235,14 @@ export interface Database {
           height?: number;
           created_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: 'fields_document_id_fkey';
+            columns: ['document_id'];
+            referencedRelation: 'documents';
+            referencedColumns: ['id'];
+          }
+        ];
       };
       otp_challenges: {
         Row: {
@@ -242,6 +275,14 @@ export interface Database {
           consumed_at?: string | null;
           created_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: 'otp_challenges_signer_id_fkey';
+            columns: ['signer_id'];
+            referencedRelation: 'signers';
+            referencedColumns: ['id'];
+          }
+        ];
       };
       signatures: {
         Row: {
@@ -286,6 +327,14 @@ export interface Database {
           consent_text?: string;
           signed_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: 'signatures_document_id_fkey';
+            columns: ['document_id'];
+            referencedRelation: 'documents';
+            referencedColumns: ['id'];
+          }
+        ];
       };
       audit_events: {
         Row: {
@@ -321,6 +370,31 @@ export interface Database {
           user_agent?: string | null;
           created_at?: string;
         };
+        Relationships: [
+          {
+            foreignKeyName: 'audit_events_document_id_fkey';
+            columns: ['document_id'];
+            referencedRelation: 'documents';
+            referencedColumns: ['id'];
+          }
+        ];
+      };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      is_member: {
+        Args: { org_id: string };
+        Returns: boolean;
+      };
+      doc_org_ok: {
+        Args: { doc_id: string };
+        Returns: boolean;
+      };
+      get_user_role: {
+        Args: { org_id: string };
+        Returns: string;
       };
     };
   };

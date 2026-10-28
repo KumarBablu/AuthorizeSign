@@ -25,8 +25,8 @@ export async function getUserOrgContext(): Promise<UserOrgContext | null> {
   }
 
   // Find user's organization memberships
-  const { data: memberRecords, error: memberError } = await supabase
-    .from('members')
+  const { data: memberRecords, error: memberError } = await (supabase
+    .from('members') as any)
     .select(`
       organization_id,
       role,
@@ -46,7 +46,7 @@ export async function getUserOrgContext(): Promise<UserOrgContext | null> {
 
   if (memberRecords && memberRecords.length > 0) {
     const member = memberRecords[0];
-    const org = member.organizations as unknown as { id: string; name: string; slug: string };
+    const org = member.organizations as { id: string; name: string; slug: string };
     return {
       userId: user.id,
       userEmail: user.email,
@@ -61,8 +61,8 @@ export async function getUserOrgContext(): Promise<UserOrgContext | null> {
   const orgName = `${userName}'s Workspace`;
   const orgSlug = `workspace-${user.id.slice(0, 8)}`;
 
-  const { data: newOrg, error: orgCreateError } = await supabase
-    .from('organizations')
+  const { data: newOrg, error: orgCreateError } = await (supabase
+    .from('organizations') as any)
     .insert({
       name: orgName,
       slug: orgSlug,
@@ -76,7 +76,7 @@ export async function getUserOrgContext(): Promise<UserOrgContext | null> {
   }
 
   // Insert member as owner
-  const { error: memberInsertError } = await supabase.from('members').insert({
+  const { error: memberInsertError } = await (supabase.from('members') as any).insert({
     organization_id: newOrg.id,
     user_id: user.id,
     role: 'owner',
