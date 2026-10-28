@@ -37,8 +37,19 @@ export default function NewDocumentPage() {
 
   const handleSendForSignature = async () => {
     if (!docMeta) return;
-    setIsSubmitting(true);
     setErrorMessage(null);
+
+    // Validate that every signatory has at least one signature field placed
+    for (let i = 0; i < signers.length; i++) {
+      const s = signers[i];
+      const hasSig = fields.some((f) => f.signerTempId === s.tempId && f.type === 'signature');
+      if (!hasSig) {
+        setErrorMessage(`Please place at least one Signature box for ${s.name || `Signatory ${i + 1}`} before sending.`);
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
 
     try {
       // 1. Upload Document via API
@@ -67,8 +78,8 @@ export default function NewDocumentPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           signers: validSigners.map((s) => ({
-            name: s.name,
-            email: s.email,
+            name: s.name.trim(),
+            email: s.email.trim().toLowerCase(),
             orderIndex: s.orderIndex,
           })),
         }),
@@ -209,15 +220,30 @@ export default function NewDocumentPage() {
             <button
               type="button"
               onClick={() => {
-                const validSigners = signers.filter((s) => s.email && s.name);
-                if (validSigners.length === 0) {
-                  alert('Please add at least one signer with name and email.');
+                setErrorMessage(null);
+                if (signers.length === 0) {
+                  setErrorMessage('Please add at least one signatory.');
+                  return;
+                }
+                for (let i = 0; i < signers.length; i++) {
+                  const s = signers[i];
+                  if (!s.name.trim()) {
+                    setErrorMessage(`Please enter a full name for Signatory ${i + 1}.`);
+                    return;
+                  }
+                  if (!s.email.trim() || !s.email.includes('@') || !s.email.includes('.')) {
+                    setErrorMessage(`Please enter a valid email address for Signatory ${i + 1} (${s.name || 'unnamed'}).`);
+                    return;
+                  }
+                }
+                const emails = signers.map((s) => s.email.trim().toLowerCase());
+                if (new Set(emails).size !== emails.length) {
+                  setErrorMessage('Each signatory must have a unique email address.');
                   return;
                 }
                 setStep(3);
               }}
-              disabled={signers.filter((s) => s.email && s.name).length === 0}
-              className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50"
+              className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-colors"
             >
               Next: Place Fields
               <ArrowRight className="w-4 h-4 ml-1.5" />
@@ -233,7 +259,7 @@ export default function NewDocumentPage() {
             <div>
               <h2 className="text-base font-semibold text-slate-900">{docMeta.title}</h2>
               <p className="text-xs text-slate-500">
-                Click on the document page to drop signature or date fields.
+                Click anywhere to drop fields. Click and drag any placed field to freely adjust its coordinates.
               </p>
             </div>
 
@@ -250,7 +276,7 @@ export default function NewDocumentPage() {
                 type="button"
                 onClick={handleSendForSignature}
                 disabled={isSubmitting || fields.length === 0}
-                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg shadow-sm transition-colors disabled:opacity-50"
+                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors disabled:opacity-50"
               >
                 <Send className="w-3.5 h-3.5 mr-1.5" />
                 {isSubmitting ? 'Sending...' : 'Send for signature'}
@@ -260,7 +286,7 @@ export default function NewDocumentPage() {
 
           <FieldEditor
             totalPages={1}
-            signers={signers.filter((s) => s.email && s.name)}
+            signers={signers}
             fields={fields}
             onChange={setFields}
           />
