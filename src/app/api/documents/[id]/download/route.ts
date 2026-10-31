@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
-import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { downloadPdfFromStorage } from '@/lib/pdf/storage';
 
@@ -13,24 +12,14 @@ export async function GET(
     const { searchParams } = new URL(request.url);
     const type = searchParams.get('type') || 'original'; // 'original' or 'signed'
 
-    let document: any = null;
+    const adminDb = createAdminClient();
+    const { data: document, error: docError } = await adminDb
+      .from('documents')
+      .select('id, title, original_storage_path, signed_storage_path, status, organization_id')
+      .eq('id', id)
+      .single();
 
-    if (devDb.isDevMode()) {
-      document = devDb.getDocumentById(id);
-    } else {
-      const adminDb = createAdminClient();
-      const { data, error: docError } = await adminDb
-        .from('documents')
-        .select('id, title, original_storage_path, signed_storage_path, status, organization_id')
-        .eq('id', id)
-        .single();
-
-      if (!docError && data) {
-        document = data;
-      }
-    }
-
-    if (!document) {
+    if (docError || !document) {
       return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
 

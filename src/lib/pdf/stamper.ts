@@ -22,10 +22,15 @@ export interface StampDocumentParams {
   signaturePngBase64?: string;
   signatureFields: StampSignatureField[];
   dateFields?: StampDateField[];
+  signerAuditStamp?: {
+    name: string;
+    documentId: string;
+    timestamp: string;
+  };
 }
 
 /**
- * Stamps signature PNG and date texts onto the PDF document using pdf-lib.
+ * Stamps signature PNG, audit metadata, and date texts onto the PDF document using pdf-lib.
  * Handles coordinate conversion: top-left (web fraction) -> bottom-left (pdf points).
  */
 export async function stampDocument({
@@ -33,9 +38,11 @@ export async function stampDocument({
   signaturePngBase64,
   signatureFields,
   dateFields = [],
+  signerAuditStamp,
 }: StampDocumentParams): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(pdfBuffer);
   const totalPages = pdfDoc.getPageCount();
+  const fontSmall = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
   let embeddedPngImage: any = null;
   if (signaturePngBase64 && signatureFields.length > 0) {
@@ -60,12 +67,28 @@ export async function stampDocument({
     const pdfY = pageHeight - (field.y + field.height) * pageHeight;
 
     if (embeddedPngImage) {
+      // Leave 10pt at bottom for audit stamp if present
+      const imageStampHeight = signerAuditStamp ? Math.max(10, pdfHeight - 11) : pdfHeight;
+      const imageStampY = signerAuditStamp ? pdfY + 11 : pdfY;
+
       page.drawImage(embeddedPngImage, {
         x: pdfX,
-        y: pdfY,
+        y: imageStampY,
         width: pdfWidth,
-        height: pdfHeight,
+        height: imageStampHeight,
       });
+
+      // ESign audit banner: name, doc ID, timestamp
+      if (signerAuditStamp) {
+        const auditText = `eSigned by ${signerAuditStamp.name} • Doc ID: ${signerAuditStamp.documentId.slice(0, 8)} • ${signerAuditStamp.timestamp}`;
+        page.drawText(auditText, {
+          x: pdfX + 2,
+          y: pdfY + 2,
+          size: 6,
+          font: fontSmall,
+          color: rgb(0.35, 0.4, 0.5),
+        });
+      }
     }
   }
 
@@ -86,7 +109,7 @@ export async function stampDocument({
       page.drawText(dField.dateText, {
         x: pdfX,
         y: pdfY,
-        size: 10,
+        size: 9,
         font,
         color: rgb(0.1, 0.1, 0.2),
       });

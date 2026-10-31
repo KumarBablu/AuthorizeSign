@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
-import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { saveFieldsSchema } from '@/lib/validations/document.schema';
 
@@ -32,11 +31,6 @@ export async function POST(
       width: Number(f.width.toFixed(5)),
       height: Number(f.height.toFixed(5)),
     }));
-
-    if (devDb.isDevMode()) {
-      devDb.insertFields(fieldRows);
-      return NextResponse.json({ success: true, count: fieldRows.length });
-    }
 
     const adminDb = createAdminClient();
     const { data: document, error: docError } = await (adminDb.from('documents') as any)

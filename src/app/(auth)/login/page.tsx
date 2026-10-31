@@ -3,53 +3,42 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { AlertCircle, CheckCircle2, FileSignature, Lock, Mail, Zap } from 'lucide-react';
+import {
+  AlertCircle,
+  Building2,
+  CheckCircle2,
+  FileSignature,
+  Lock,
+  Mail,
+  ShieldCheck,
+  User,
+} from 'lucide-react';
 import { createClient } from '@/lib/db/supabase-client';
 
 export default function LoginPage() {
   const router = useRouter();
+  const [tab, setTab] = useState<'signin' | 'register'>('signin');
   const [authMode, setAuthMode] = useState<'password' | 'magic_link'>('password');
+
+  // Sign In state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  // Register state
+  const [fullName, setFullName] = useState('');
+  const [orgName, setOrgName] = useState('');
+  const [registerEmail, setRegisterEmail] = useState('');
+  const [registerPassword, setRegisterPassword] = useState('');
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const handleDemoLogin = async (customEmail?: string) => {
-    setIsSubmitting(true);
-    setErrorMessage(null);
-    try {
-      const res = await fetch('/api/auth/dev-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: customEmail || email || 'demo@authsign.local' }),
-      });
-      if (res.ok) {
-        router.push('/dashboard');
-        router.refresh();
-      } else {
-        setErrorMessage('Failed to sign in to demo');
-      }
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Demo login failed');
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setSuccessMessage(null);
     setIsSubmitting(true);
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-    const isMock = !supabaseUrl || supabaseUrl.includes('your-project-ref');
-
-    if (isMock) {
-      await handleDemoLogin(email.trim());
-      return;
-    }
 
     const supabase = createClient();
 
@@ -79,15 +68,59 @@ export default function LoginPage() {
           throw error;
         }
 
-        setSuccessMessage('Check your email for the magic sign-in link.');
+        setSuccessMessage('Check your email for your secure magic sign-in link.');
       }
     } catch (err: any) {
-      // In case Supabase network fails or credentials are invalid in dev
-      if (err.message?.includes('fetch failed') || err.message?.includes('Failed to fetch')) {
-        await handleDemoLogin(email.trim());
-        return;
+      setErrorMessage(err.message || 'Authentication failed. Please verify your credentials.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    if (registerPassword.length < 8) {
+      setErrorMessage('Password must be at least 8 characters long.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    const supabase = createClient();
+
+    try {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+      const { data, error } = await supabase.auth.signUp({
+        email: registerEmail.trim(),
+        password: registerPassword,
+        options: {
+          data: {
+            name: fullName.trim(),
+            organization_name: orgName.trim(),
+          },
+          emailRedirectTo: `${appUrl}/auth/callback`,
+        },
+      });
+
+      if (error) {
+        throw error;
       }
-      setErrorMessage(err.message || 'Authentication failed');
+
+      if (data.session) {
+        // Automatically signed in
+        router.push('/dashboard');
+        router.refresh();
+      } else {
+        setSuccessMessage(
+          'Account created successfully! Check your email to confirm your account and sign in.'
+        );
+        setTab('signin');
+        setEmail(registerEmail.trim());
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to create organization account.');
     } finally {
       setIsSubmitting(false);
     }
@@ -96,79 +129,52 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center space-y-2">
-        <div className="w-12 h-12 rounded-xl bg-blue-600 flex items-center justify-center text-white mx-auto shadow-md">
-          <FileSignature className="w-6 h-6" />
-        </div>
-        <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
-          Sign in to Auth<span className="text-blue-600">Sign</span>
-        </h2>
+        <Link href="/" className="inline-flex items-center space-x-2.5">
+          <div className="w-11 h-11 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-md">
+            <FileSignature className="w-6 h-6" />
+          </div>
+          <span className="text-2xl font-bold text-slate-900 tracking-tight">
+            Auth<span className="text-blue-600">Sign</span>
+          </span>
+        </Link>
         <p className="text-xs text-slate-500">
-          Internal Enterprise E-Signature Platform
+          Enterprise Digital Signature &amp; Execution Platform
         </p>
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white py-8 px-6 shadow-sm rounded-2xl border border-slate-200 sm:px-10 space-y-5">
-          {/* Quick Demo Mode Banner */}
-          <div className="p-3.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-blue-900 flex items-center">
-                <Zap className="w-3.5 h-3.5 mr-1 text-blue-600" />
-                Local Evaluation Mode
-              </span>
-              <span className="text-[10px] bg-blue-100 text-blue-700 font-semibold px-2 py-0.5 rounded-full">
-                Instant Access
-              </span>
-            </div>
-            <p className="text-[11px] text-blue-700 leading-snug">
-              Evaluate AuthSign instantly without configuring Supabase or entering credentials.
-            </p>
-            <button
-              type="button"
-              onClick={() => handleDemoLogin('demo@authsign.local')}
-              disabled={isSubmitting}
-              className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs rounded-lg transition-all shadow-sm flex items-center justify-center space-x-1.5"
-            >
-              <Zap className="w-3.5 h-3.5" />
-              <span>⚡ 1-Click Demo Sign-In &rarr;</span>
-            </button>
-          </div>
-
-          <div className="relative flex py-1 items-center">
-            <div className="flex-grow border-t border-slate-200" />
-            <span className="flex-shrink mx-2 text-[10px] uppercase font-semibold text-slate-400">or sign in with credentials</span>
-            <div className="flex-grow border-t border-slate-200" />
-          </div>
-
-          {/* Tabs */}
-          <div className="flex border-b border-slate-100 bg-slate-50/50 rounded-lg p-1">
+          {/* Main Tabs: Sign In vs Create Account */}
+          <div className="flex border-b border-slate-200">
             <button
               type="button"
               onClick={() => {
-                setAuthMode('password');
+                setTab('signin');
                 setErrorMessage(null);
+                setSuccessMessage(null);
               }}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
-                authMode === 'password'
-                  ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                  : 'text-slate-500 hover:text-slate-900'
+              className={`flex-1 pb-3 text-xs font-semibold text-center border-b-2 transition-all ${
+                tab === 'signin'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
-              Password
+              Sign In
             </button>
             <button
               type="button"
               onClick={() => {
-                setAuthMode('magic_link');
+                setTab('register');
                 setErrorMessage(null);
+                setSuccessMessage(null);
               }}
-              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${
-                authMode === 'magic_link'
-                  ? 'bg-white text-slate-900 shadow-sm font-semibold'
-                  : 'text-slate-500 hover:text-slate-900'
+              className={`flex-1 pb-3 text-xs font-semibold text-center border-b-2 transition-all ${
+                tab === 'register'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
               }`}
             >
-              Magic Link
+              Create Account
             </button>
           </div>
 
@@ -186,57 +192,171 @@ export default function LoginPage() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Work Email Address
-              </label>
-              <div className="relative">
-                <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@company.com"
-                  className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                />
+          {tab === 'signin' ? (
+            <div className="space-y-4">
+              {/* Secondary Subtabs: Password vs Magic Link */}
+              <div className="flex bg-slate-100 rounded-lg p-1 text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('password')}
+                  className={`flex-1 py-1.5 rounded-md transition-all ${
+                    authMode === 'password'
+                      ? 'bg-white text-slate-900 shadow-sm font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Password
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('magic_link')}
+                  className={`flex-1 py-1.5 rounded-md transition-all ${
+                    authMode === 'magic_link'
+                      ? 'bg-white text-slate-900 shadow-sm font-semibold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Magic Link
+                </button>
               </div>
-            </div>
 
-            {authMode === 'password' && (
+              <form onSubmit={handleSignIn} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Work Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="email"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@company.com"
+                      className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {authMode === 'password' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-700 mb-1">
+                      Password
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                      <input
+                        type="password"
+                        required
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-sm transition-colors shadow-sm disabled:opacity-50"
+                >
+                  {isSubmitting
+                    ? 'Authenticating...'
+                    : authMode === 'password'
+                    ? 'Sign In to Workspace'
+                    : 'Send Secure Magic Link'}
+                </button>
+              </form>
+            </div>
+          ) : (
+            /* Register / Create Account Form */
+            <form onSubmit={handleRegister} className="space-y-3.5">
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Password</label>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Full Name</label>
+                <div className="relative">
+                  <User className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    required
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="Jane Doe"
+                    className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Company / Organization Name
+                </label>
+                <div className="relative">
+                  <Building2 className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    required
+                    value={orgName}
+                    onChange={(e) => setOrgName(e.target.value)}
+                    placeholder="Acme Legal Corp"
+                    className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Work Email Address
+                </label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="email"
+                    required
+                    value={registerEmail}
+                    onChange={(e) => setRegisterEmail(e.target.value)}
+                    placeholder="name@company.com"
+                    className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Password (min 8 characters)
+                </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                   <input
                     type="password"
                     required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    minLength={8}
+                    value={registerPassword}
+                    onChange={(e) => setRegisterPassword(e.target.value)}
                     placeholder="••••••••"
                     className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
                 </div>
               </div>
-            )}
 
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-sm transition-colors shadow-sm disabled:opacity-50"
-            >
-              {isSubmitting
-                ? 'Processing...'
-                : authMode === 'password'
-                ? 'Sign In'
-                : 'Send Magic Link'}
-            </button>
-          </form>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg text-sm transition-colors shadow-sm disabled:opacity-50"
+              >
+                {isSubmitting ? 'Setting up workspace...' : 'Create Enterprise Workspace'}
+              </button>
+            </form>
+          )}
 
-          <div className="text-center pt-2">
-            <Link href="/verify" className="text-xs text-slate-500 hover:text-slate-800 underline">
-              Looking to verify a signed document? Go to Verify &rarr;
+          <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+            <span className="flex items-center text-slate-400">
+              <ShieldCheck className="w-3.5 h-3.5 mr-1 text-emerald-500" />
+              IT Act &amp; eIDAS Compliant
+            </span>
+            <Link href="/verify" className="hover:text-blue-600 underline">
+              Verify Signed PDF &rarr;
             </Link>
           </div>
         </div>

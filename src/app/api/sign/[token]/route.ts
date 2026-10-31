@@ -1,5 +1,4 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { hashToken, maskEmail } from '@/lib/security/crypto';
 
@@ -14,44 +13,35 @@ export async function GET(
     }
 
     const tokenHash = hashToken(token);
-    let signer: any = null;
+    const adminDb = createAdminClient();
 
-    if (devDb.isDevMode()) {
-      signer = devDb.getSignerByTokenHash(tokenHash);
-    } else {
-      const adminDb = createAdminClient();
-      const { data, error: signerError } = await (adminDb.from('signers') as any)
-        .select(`
+    const { data: signer, error: signerError } = await (adminDb.from('signers') as any)
+      .select(`
+        id,
+        name,
+        email,
+        order_index,
+        status,
+        verified_at,
+        signed_at,
+        document_id,
+        documents (
           id,
-          name,
-          email,
-          order_index,
+          title,
           status,
-          verified_at,
-          signed_at,
-          document_id,
-          documents (
-            id,
-            title,
-            status,
-            signing_order,
-            expires_at,
-            signed_sha256,
-            organization_id,
-            organizations (
-              name
-            )
+          signing_order,
+          expires_at,
+          signed_sha256,
+          organization_id,
+          organizations (
+            name
           )
-        `)
-        .eq('token_hash', tokenHash)
-        .single();
+        )
+      `)
+      .eq('token_hash', tokenHash)
+      .single();
 
-      if (!signerError && data) {
-        signer = data;
-      }
-    }
-
-    if (!signer) {
+    if (signerError || !signer) {
       return NextResponse.json(
         { error: 'Invalid or unknown signing link.' },
         { status: 404 }
@@ -63,48 +53,46 @@ export async function GET(
     const orgName = org?.name || 'the organization';
     const isExpired = new Date(doc.expires_at).getTime() < Date.now();
 
-    // Log audit event: link_opened
+    // Log immutable audit event: link_opened
     const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
     const userAgent = request.headers.get('user-agent') || 'unknown';
 
-    if (devDb.isDevMode()) {
-      devDb.insertAuditEvent({
-        document_id: doc.id,
-        signer_id: signer.id,
-        event_type: 'link_opened',
-        ip_address: ip,
-        user_agent: userAgent,
-        metadata: {
-          signer_email: signer.email,
-          signer_status: signer.status,
-          document_status: doc.status,
-        },
-      });
-    }
+    await (adminDb.from('audit_events') as any).insert({
+      document_id: doc.id,
+      signer_id: signer.id,
+      event_type: 'link_opened',
+      ip_address: ip,
+      user_agent: userAgent,
+      metadata: {
+        signer_email: signer.email,
+        signer_status: signer.status,
+        document_status: doc.status,
+      },
+    });
 
-    // STATE 1: DOCUMENT COMPLETED (Show green checkmark any time, any day)
+    // STATE 1: DOCUMENT COMPLETED
     if (doc.status === 'completed') {
       return NextResponse.json({
         state: 'completed',
         title: doc.title,
         organizationName: orgName,
         signedSha256: doc.signed_sha256,
-        message: 'Document has been signed',
+        message: 'Document has been fully signed and executed.',
         downloadUrl: `/api/documents/${doc.id}/download?type=signed`,
       });
     }
 
-    // STATE 2: LINK EXPIRED (Time over)
+    // STATE 2: LINK EXPIRED
     if (isExpired || doc.status === 'expired') {
       return NextResponse.json({
         state: 'expired',
         title: doc.title,
         organizationName: orgName,
-        message: `This signing link has expired. Time over. Please connect with ${orgName} to request a new signing link.`,
+        message: `This signing link has expired. Please connect with ${orgName} to request a new signing link.`,
       });
     }
 
-    // STATE 3: THIS SIGNER ALREADY SIGNED (Waiting for other parties)
+    // STATE 3: THIS SIGNER ALREADY SIGNED
     if (signer.status === 'signed') {
       return NextResponse.json({
         state: 'already_signed_by_you',
@@ -117,21 +105,12 @@ export async function GET(
 
     // STATE 4: SEQUENTIAL BLOCKING CHECK
     if (doc.signing_order === 'sequential' && signer.order_index > 0) {
-      let previousSigners: any[] = [];
-      if (devDb.isDevMode()) {
-        previousSigners = devDb
-          .getSignersForDocument(doc.id)
-          .filter((s) => s.order_index < signer.order_index);
-      } else {
-        const adminDb = createAdminClient();
-        const { data } = await (adminDb.from('signers') as any)
-          .select('name, status, order_index')
-          .eq('document_id', doc.id)
-          .lt('order_index', signer.order_index);
-        previousSigners = data || [];
-      }
+      const { data: previousSigners } = await (adminDb.from('signers') as any)
+        .select('name, status, order_index')
+        .eq('document_id', doc.id)
+        .lt('order_index', signer.order_index);
 
-      const unsignedPrev = previousSigners.find((s) => s.status !== 'signed');
+      const unsignedPrev = (previousSigners || []).find((s: any) => s.status !== 'signed');
       if (unsignedPrev) {
         return NextResponse.json({
           state: 'blocked',

@@ -1,6 +1,14 @@
 import React from 'react';
 import Link from 'next/link';
-import { FileSignature, CheckCircle, FileText, PlusCircle } from 'lucide-react';
+import {
+  FileSignature,
+  FileSpreadsheet,
+  FileText,
+  LogOut,
+  PlusCircle,
+  ShieldCheck,
+  Users,
+} from 'lucide-react';
 
 export default function DashboardLayout({
   children,
@@ -10,7 +18,7 @@ export default function DashboardLayout({
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Header Navigation */}
-      <header className="sticky top-0 z-40 bg-white border-b border-slate-200">
+      <header className="sticky top-0 z-40 bg-white border-b border-slate-200 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center space-x-8">
             <Link href="/dashboard" className="flex items-center space-x-2.5">
@@ -25,14 +33,29 @@ export default function DashboardLayout({
             <nav className="hidden md:flex items-center space-x-1">
               <Link
                 href="/dashboard"
-                className="px-3 py-1.5 text-sm font-medium text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors"
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors"
               >
                 Documents
               </Link>
               <Link
-                href="/verify"
-                className="px-3 py-1.5 text-sm font-medium text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors"
+                href="/templates"
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors flex items-center"
               >
+                <FileSpreadsheet className="w-3.5 h-3.5 mr-1 text-indigo-600" />
+                Templates &amp; Bulk
+              </Link>
+              <Link
+                href="/team"
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors flex items-center"
+              >
+                <Users className="w-3.5 h-3.5 mr-1 text-blue-600" />
+                Team &amp; Users
+              </Link>
+              <Link
+                href="/verify"
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors flex items-center"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 mr-1 text-emerald-600" />
                 Verify PDF
               </Link>
             </nav>
@@ -46,6 +69,14 @@ export default function DashboardLayout({
               <PlusCircle className="w-4 h-4 mr-1.5" />
               New Document
             </Link>
+
+            <a
+              href="/api/auth/logout"
+              title="Sign Out"
+              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
+            >
+              <LogOut className="w-4 h-4" />
+            </a>
           </div>
         </div>
       </header>

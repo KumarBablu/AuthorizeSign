@@ -1,6 +1,5 @@
-import { cookies } from 'next/headers';
-import { devDb } from '@/lib/db/dev-store';
 import { createClient } from '@/lib/db/supabase-server';
+import { createAdminClient } from '@/lib/db/supabase-admin';
 import type { MemberRole } from '@/types/database.types';
 
 export interface UserOrgContext {
@@ -14,23 +13,9 @@ export interface UserOrgContext {
 /**
  * Retrieves the current authenticated user and their active organization membership.
  * If user has no organization yet, creates an initial organization for them with 'owner' role.
- * Includes local dev/demo mode fallback for offline evaluation.
+ * Strictly operates via Supabase Auth without dev mode backdoors.
  */
 export async function getUserOrgContext(): Promise<UserOrgContext | null> {
-  const cookieStore = await cookies();
-  const devCookie = cookieStore.get('authsign_dev_user')?.value;
-
-  // In offline dev mode or when demo cookie is set
-  if (devCookie || devDb.isDevMode()) {
-    return {
-      userId: 'dev-user-001',
-      userEmail: devCookie || 'demo@authsign.local',
-      organizationId: 'dev-org-001',
-      organizationName: 'AuthSign Demo Workspace',
-      role: 'owner',
-    };
-  }
-
   const supabase = await createClient();
 
   const {
@@ -42,7 +27,8 @@ export async function getUserOrgContext(): Promise<UserOrgContext | null> {
   }
 
   // Find user's organization memberships
-  const { data: memberRecords, error: memberError } = await (supabase
+  const adminDb = createAdminClient();
+  const { data: memberRecords, error: memberError } = await (adminDb
     .from('members') as any)
     .select(`
       organization_id,
@@ -78,7 +64,7 @@ export async function getUserOrgContext(): Promise<UserOrgContext | null> {
   const orgName = `${userName}'s Workspace`;
   const orgSlug = `workspace-${user.id.slice(0, 8)}`;
 
-  const { data: newOrg, error: orgCreateError } = await (supabase
+  const { data: newOrg, error: orgCreateError } = await (adminDb
     .from('organizations') as any)
     .insert({
       name: orgName,
@@ -93,7 +79,7 @@ export async function getUserOrgContext(): Promise<UserOrgContext | null> {
   }
 
   // Insert member as owner
-  const { error: memberInsertError } = await (supabase.from('members') as any).insert({
+  const { error: memberInsertError } = await (adminDb.from('members') as any).insert({
     organization_id: newOrg.id,
     user_id: user.id,
     role: 'owner',

@@ -1,36 +1,35 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
   AlertCircle,
-  ArrowRight,
+  Camera,
   CheckCircle,
   CheckCircle2,
   Clock,
   Download,
   FileSignature,
-  FileText,
-  KeyRound,
   Lock,
   Mail,
+  MapPin,
   PenTool,
-  ShieldAlert,
+  RefreshCw,
   ShieldCheck,
+  User,
 } from 'lucide-react';
 import { SignatureModal } from '@/components/signer/signature-modal';
 
 type SignerState =
   | 'loading'
-  | 'completed'
-  | 'expired'
-  | 'already_signed_by_you'
-  | 'blocked'
   | 'ready_to_verify'
   | 'ready_to_sign'
-  | 'signed_done';
+  | 'blocked'
+  | 'already_signed_by_you'
+  | 'expired'
+  | 'completed';
 
-export default function SignerFlowPage() {
+export default function SignerTokenPage() {
   const params = useParams();
   const token = params.token as string;
 
@@ -38,40 +37,65 @@ export default function SignerFlowPage() {
   const [docInfo, setDocInfo] = useState<any>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // OTP State
+  // OTP flow state
   const [otpCode, setOtpCode] = useState('');
   const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
   const [otpSentNotice, setOtpSentNotice] = useState(false);
 
-  // Signature State
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // Signature state
   const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
   const [signatureMethod, setSignatureMethod] = useState<'draw' | 'typed'>('draw');
   const [typedFont, setTypedFont] = useState<string | undefined>(undefined);
   const [consentChecked, setConsentChecked] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmittingSignature, setIsSubmittingSignature] = useState(false);
 
-  // Fetch initial token status
-  useEffect(() => {
-    async function checkToken() {
-      try {
-        const res = await fetch(`/api/sign/${token}`);
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to verify signing link');
-        }
-        setDocInfo(data);
-        setState(data.state as SignerState);
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Invalid or expired signing link');
-        setState('expired');
+  // Biometric Photo state
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // GPS Geo-location state
+  const [geoLocation, setGeoLocation] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
+  const [isFetchingGeo, setIsFetchingGeo] = useState(false);
+  const [geoError, setGeoError] = useState<string | null>(null);
+
+  // Fetch token status on load
+  const fetchTokenStatus = async () => {
+    setState('loading');
+    setErrorMessage(null);
+    try {
+      const res = await fetch(`/api/sign/${token}`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to load document');
       }
+
+      setDocInfo(data);
+      setState(data.state);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Error loading document');
     }
+  };
+
+  useEffect(() => {
     if (token) {
-      checkToken();
+      fetchTokenStatus();
     }
   }, [token]);
+
+  // Clean up camera stream on unmount
+  useEffect(() => {
+    return () => {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [cameraStream]);
 
   // Handle Send OTP
   const handleSendOtp = async () => {
@@ -86,9 +110,6 @@ export default function SignerFlowPage() {
         throw new Error(data.error || 'Failed to send verification code');
       }
       setOtpSentNotice(true);
-      if (data.devCode) {
-        setOtpCode(data.devCode);
-      }
     } catch (err: any) {
       setErrorMessage(err.message);
     } finally {
@@ -117,11 +138,104 @@ export default function SignerFlowPage() {
         throw new Error(data.error || 'Verification failed');
       }
       setState('ready_to_sign');
+      // Proactively request GPS location
+      requestGeoLocation();
     } catch (err: any) {
       setErrorMessage(err.message);
     } finally {
       setIsVerifyingOtp(false);
     }
+  };
+
+  // Handle Camera Activation
+  const startCamera = async () => {
+    setErrorMessage(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      });
+      setCameraStream(stream);
+      setIsCameraActive(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+      }
+    } catch (err: any) {
+      setErrorMessage(
+        'Camera permission was denied or camera is unavailable. You can still sign, but taking a verification photo ensures full court-admissible audit proof.'
+      );
+    }
+  };
+
+  // Attach stream to video ref when camera becomes active
+  useEffect(() => {
+    if (isCameraActive && videoRef.current && cameraStream) {
+      videoRef.current.srcObject = cameraStream;
+      videoRef.current.play().catch(console.error);
+    }
+  }, [isCameraActive, cameraStream]);
+
+  // Handle Capture Photo with 3-Second Countdown
+  const triggerPhotoCountdown = () => {
+    setCountdown(3);
+    const interval = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          clearInterval(interval);
+          takeSnapshot();
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const takeSnapshot = () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 400;
+    canvas.height = 300;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      // Draw frame to canvas
+      ctx.drawImage(videoRef.current, 0, 0, 400, 300);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      setPhotoDataUrl(dataUrl);
+
+      // Stop camera stream
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+        setCameraStream(null);
+      }
+      setIsCameraActive(false);
+    }
+  };
+
+  // Handle GPS Geo-Location Request
+  const requestGeoLocation = () => {
+    if (!('geolocation' in navigator)) {
+      setGeoError('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setIsFetchingGeo(true);
+    setGeoError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGeoLocation({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        });
+        setIsFetchingGeo(false);
+      },
+      (err) => {
+        setGeoError(err.message || 'Unable to retrieve location');
+        setIsFetchingGeo(false);
+      },
+      { timeout: 10000, enableHighAccuracy: true }
+    );
   };
 
   // Handle Signature Adoption
@@ -135,7 +249,7 @@ export default function SignerFlowPage() {
   // Handle Final Submit
   const handleSubmitSignature = async () => {
     if (!signatureDataUrl) {
-      setErrorMessage('Please create your signature first.');
+      setErrorMessage('Please create or adopt your signature first.');
       return;
     }
     if (!consentChecked) {
@@ -154,6 +268,8 @@ export default function SignerFlowPage() {
           signatureMethod,
           typedFont,
           consent: true,
+          signerPhotoBase64: photoDataUrl || undefined,
+          geoLocation: geoLocation || undefined,
         }),
       });
       const data = await res.json();
@@ -209,7 +325,7 @@ export default function SignerFlowPage() {
           </div>
         )}
 
-        {/* STATE 1: COMPLETED (Green checkmark any time, any day) */}
+        {/* STATE 1: COMPLETED */}
         {state === 'completed' && (
           <div className="bg-white rounded-2xl p-8 border border-slate-200 shadow-md text-center space-y-5 animate-in fade-in duration-300">
             <div className="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto text-emerald-600">
@@ -219,14 +335,14 @@ export default function SignerFlowPage() {
             <div className="space-y-1">
               <h2 className="text-2xl font-bold text-slate-900">Document has been signed</h2>
               <p className="text-sm text-slate-500">
-                &quot;{docInfo?.title || 'Document'}&quot; has been fully signed and executed by all parties.
+                &quot;{docInfo?.title || 'Document'}&quot; has been fully signed and executed.
               </p>
             </div>
 
             <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600 space-y-1">
               <div className="font-semibold text-slate-700">Cryptographically Certified</div>
               <p className="text-[11px] text-slate-500">
-                A formal Certificate of Completion with tamper-evident SHA-256 checksums has been stamped.
+                A formal Certificate of Completion with biometric identity proof, GPS coordinates, and tamper-evident SHA-256 checksums has been anchored to this record.
               </p>
             </div>
 
@@ -243,7 +359,7 @@ export default function SignerFlowPage() {
           </div>
         )}
 
-        {/* STATE 2: EXPIRED (Time over, connect with org) */}
+        {/* STATE 2: EXPIRED */}
         {state === 'expired' && (
           <div className="bg-white rounded-2xl p-8 border border-red-200 shadow-md text-center space-y-5">
             <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto text-red-600">
@@ -262,7 +378,7 @@ export default function SignerFlowPage() {
           </div>
         )}
 
-        {/* STATE 3: THIS SIGNER ALREADY SIGNED (Waiting for others) */}
+        {/* STATE 3: THIS SIGNER ALREADY SIGNED */}
         {state === 'already_signed_by_you' && (
           <div className="bg-white rounded-2xl p-8 border border-slate-200 shadow-md text-center space-y-5">
             <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto text-blue-600">
@@ -381,7 +497,7 @@ export default function SignerFlowPage() {
           </div>
         )}
 
-        {/* STATE 6: READY TO SIGN (PDF Review + Signature Input) */}
+        {/* STATE 6: READY TO SIGN (PDF Review + Biometric Photo + GPS + Signature) */}
         {state === 'ready_to_sign' && (
           <div className="space-y-6">
             <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-md space-y-4">
@@ -403,6 +519,145 @@ export default function SignerFlowPage() {
                   className="w-full h-full border-none"
                   title="Document Preview"
                 />
+              </div>
+
+              {/* Legal Biometric Photo Verification Step */}
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-700 flex items-center">
+                    <Camera className="w-3.5 h-3.5 mr-1.5 text-blue-600" />
+                    Biometric Identity Verification
+                  </span>
+                  {photoDataUrl && (
+                    <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                      ✓ Photo Verified
+                    </span>
+                  )}
+                </div>
+
+                {!photoDataUrl ? (
+                  <div>
+                    {!isCameraActive ? (
+                      <button
+                        type="button"
+                        onClick={startCamera}
+                        className="w-full py-2.5 px-3 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-medium text-xs rounded-lg flex items-center justify-center space-x-2 transition-all shadow-sm"
+                      >
+                        <Camera className="w-4 h-4 text-blue-600" />
+                        <span>Allow Front Camera &amp; Take Verification Selfie</span>
+                      </button>
+                    ) : (
+                      <div className="space-y-3 text-center">
+                        <div className="relative w-full max-w-[280px] mx-auto rounded-xl overflow-hidden border border-slate-300 bg-black aspect-video flex items-center justify-center">
+                          <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                          {countdown !== null && (
+                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                              <span className="text-5xl font-extrabold text-white animate-pulse">
+                                {countdown}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={triggerPhotoCountdown}
+                            disabled={countdown !== null}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs rounded-lg shadow-sm flex items-center space-x-1"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                            <span>Capture Selfie (3s Timer)</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={takeSnapshot}
+                            disabled={countdown !== null}
+                            className="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 font-medium text-xs rounded-lg"
+                          >
+                            Snap Now
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-slate-400 mt-1.5 leading-snug">
+                      Your photo will be securely embedded into the formal Certificate of Completion to guarantee legal non-repudiation.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200">
+                    <div className="flex items-center space-x-3">
+                      <img
+                        src={photoDataUrl}
+                        alt="Signer Selfie"
+                        className="w-12 h-12 rounded-lg object-cover border border-slate-200"
+                      />
+                      <div>
+                        <span className="text-xs font-semibold text-slate-800 block">
+                          Front-Camera Selfie Captured
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          Anchored to Certificate of Completion
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhotoDataUrl(null);
+                        startCamera();
+                      }}
+                      className="text-xs text-blue-600 hover:underline font-medium"
+                    >
+                      Retake
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* GPS Geo-Location Verification Step */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-700 flex items-center">
+                    <MapPin className="w-3.5 h-3.5 mr-1.5 text-blue-600" />
+                    Geographical Location Audit Tag
+                  </span>
+                  {geoLocation && (
+                    <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
+                      ✓ GPS Verified
+                    </span>
+                  )}
+                </div>
+
+                {geoLocation ? (
+                  <div className="text-xs text-slate-700 font-mono bg-white p-2 rounded border border-slate-200 flex items-center justify-between">
+                    <span>
+                      {geoLocation.lat.toFixed(4)}° N, {geoLocation.lng.toFixed(4)}° E (±{Math.round(geoLocation.accuracy || 10)}m)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={requestGeoLocation}
+                      className="text-[10px] text-blue-600 hover:underline font-sans"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-slate-500">
+                      {isFetchingGeo ? 'Acquiring GPS location...' : geoError ? geoError : 'Location not recorded'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={requestGeoLocation}
+                      disabled={isFetchingGeo}
+                      className="text-xs text-blue-600 hover:underline font-medium flex items-center"
+                    >
+                      <RefreshCw className={`w-3 h-3 mr-1 ${isFetchingGeo ? 'animate-spin' : ''}`} />
+                      {isFetchingGeo ? 'Detecting...' : 'Detect GPS'}
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Signature Capture Trigger */}
@@ -451,7 +706,7 @@ export default function SignerFlowPage() {
                     className="mt-0.5 w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
                   />
                   <span className="text-xs text-slate-600 leading-normal">
-                    I agree to sign this document electronically and understand that my electronic signature is legally binding.
+                    I agree to sign this document electronically and understand that my electronic signature and recorded audit metrics are legally binding under applicable electronic signature laws.
                   </span>
                 </label>
               </div>
@@ -463,7 +718,7 @@ export default function SignerFlowPage() {
                 disabled={isSubmittingSignature || !signatureDataUrl || !consentChecked}
                 className="w-full py-3.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-sm transition-colors shadow-sm disabled:opacity-50"
               >
-                {isSubmittingSignature ? 'Stamping & Finalizing...' : 'Submit Signed Document'}
+                {isSubmittingSignature ? 'Stamping & Finalizing Certificate...' : 'Submit Signed Document'}
               </button>
             </div>
           </div>

@@ -1,8 +1,6 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
-import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
-import { createClient } from '@/lib/db/supabase-server';
 import { computeSha256Hex } from '@/lib/pdf/hash';
 import { uploadPdfToStorage } from '@/lib/pdf/storage';
 import { validatePdfFile, validatePdfMagicBytes } from '@/lib/pdf/validator';
@@ -18,13 +16,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const status = searchParams.get('status');
 
-    if (devDb.isDevMode()) {
-      const documents = devDb.getDocuments(orgContext.organizationId, status || undefined);
-      return NextResponse.json({ documents });
-    }
-
-    const supabase = await createClient();
-    let query = (supabase.from('documents') as any)
+    const adminDb = createAdminClient();
+    let query = (adminDb.from('documents') as any)
       .select(`
         id,
         title,
@@ -35,6 +28,8 @@ export async function GET(request: NextRequest) {
         expires_at,
         created_at,
         updated_at,
+        is_template,
+        template_name,
         signers (
           id,
           name,
@@ -44,6 +39,7 @@ export async function GET(request: NextRequest) {
         )
       `)
       .eq('organization_id', orgContext.organizationId)
+      .eq('is_template', false)
       .order('created_at', { ascending: false });
 
     if (status) {
@@ -64,32 +60,29 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const orgContext = await getUserOrgContext();
-    if (!orgContext) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    if (!['owner', 'admin', 'sender'].includes(orgContext.role)) {
+    if (!orgContext || !['owner', 'admin', 'sender'].includes(orgContext.role)) {
       return NextResponse.json(
-        { error: 'Insufficient permissions to upload documents' },
+        { error: 'Unauthorized. You do not have permission to upload documents.' },
         { status: 403 }
       );
     }
 
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
-    const title = formData.get('title') as string | null;
+    const title = (formData.get('title') as string) || '';
     const signingOrder = (formData.get('signingOrder') as string) || 'sequential';
-    const expiryDays = formData.get('expiryDays') ? Number(formData.get('expiryDays')) : 7;
     const verificationMethod = (formData.get('verificationMethod') as string) || 'email_otp';
     const signatureMethod = (formData.get('signatureMethod') as string) || 'draw';
+    const expiryDays = parseInt((formData.get('expiryDays') as string) || '7', 10);
 
     if (!file) {
       return NextResponse.json({ error: 'No PDF file provided' }, { status: 400 });
     }
 
-    const fileValidation = validatePdfFile(file);
-    if (!fileValidation.valid) {
-      return NextResponse.json({ error: fileValidation.error }, { status: 400 });
+    // Validate PDF file size, type, and magic bytes
+    const validation = validatePdfFile(file);
+    if (!validation.valid) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
     }
 
     const arrayBuffer = await file.arrayBuffer();
@@ -97,7 +90,7 @@ export async function POST(request: NextRequest) {
 
     if (!validatePdfMagicBytes(buffer)) {
       return NextResponse.json(
-        { error: 'Invalid file format: File missing %PDF- header' },
+        { error: 'Invalid file format: Document is missing valid %PDF- header magic bytes.' },
         { status: 400 }
       );
     }
@@ -105,9 +98,9 @@ export async function POST(request: NextRequest) {
     const validatedInput = createDocumentSchema.safeParse({
       title: title || file.name.replace(/\.pdf$/i, ''),
       signingOrder,
-      expiryDays,
       verificationMethod,
       signatureMethod,
+      expiryDays,
     });
 
     if (!validatedInput.success) {
@@ -117,6 +110,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Compute cryptographic SHA-256
     const originalSha256 = await computeSha256Hex(buffer);
     const expiresAt = new Date(Date.now() + validatedInput.data.expiryDays * 24 * 60 * 60 * 1000);
 
@@ -140,29 +134,8 @@ export async function POST(request: NextRequest) {
       expires_at: expiresAt.toISOString(),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      is_template: false,
     };
-
-    if (devDb.isDevMode()) {
-      devDb.insertDocument(documentData);
-      devDb.insertAuditEvent({
-        document_id: docId,
-        user_id: orgContext.userId,
-        event_type: 'document_created',
-        metadata: {
-          title: documentData.title,
-          original_sha256: originalSha256,
-          signing_order: documentData.signing_order,
-          expires_at: documentData.expires_at,
-        },
-      });
-
-      return NextResponse.json({
-        documentId: docId,
-        title: documentData.title,
-        originalSha256,
-        expiresAt: documentData.expires_at,
-      });
-    }
 
     const adminDb = createAdminClient();
     const { data: document, error: docError } = await (adminDb.from('documents') as any)
@@ -178,7 +151,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Log audit event
+    // Log immutable audit event
     await (adminDb.from('audit_events') as any).insert({
       document_id: document.id,
       user_id: orgContext.userId,

@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
-import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { sendEmail } from '@/lib/email/resend';
 import { renderInvitationEmail } from '@/lib/email/templates/invitation';
@@ -18,50 +17,37 @@ export async function POST(
 
     const { id } = await params;
 
-    let document: any = null;
-    let signers: any[] = [];
-    let fields: any[] = [];
-
-    if (devDb.isDevMode()) {
-      document = devDb.getDocumentById(id);
-      if (!document) {
-        return NextResponse.json({ error: 'Document not found' }, { status: 404 });
-      }
-      signers = document.signers || [];
-      fields = document.fields || [];
-    } else {
-      const adminDb = createAdminClient();
-      const { data: doc, error: docError } = await (adminDb.from('documents') as any)
-        .select(`
+    const adminDb = createAdminClient();
+    const { data: doc, error: docError } = await (adminDb.from('documents') as any)
+      .select(`
+        id,
+        title,
+        status,
+        signing_order,
+        expires_at,
+        signers (
           id,
-          title,
-          status,
-          signing_order,
-          expires_at,
-          signers (
-            id,
-            name,
-            email,
-            order_index,
-            status
-          ),
-          fields (
-            id,
-            signer_id,
-            type
-          )
-        `)
-        .eq('id', id)
-        .eq('organization_id', orgContext.organizationId)
-        .single();
+          name,
+          email,
+          order_index,
+          status
+        ),
+        fields (
+          id,
+          signer_id,
+          type
+        )
+      `)
+      .eq('id', id)
+      .eq('organization_id', orgContext.organizationId)
+      .single();
 
-      if (docError || !doc) {
-        return NextResponse.json({ error: 'Document not found' }, { status: 404 });
-      }
-      document = doc;
-      signers = doc.signers || [];
-      fields = doc.fields || [];
+    if (docError || !doc) {
+      return NextResponse.json({ error: 'Document not found' }, { status: 404 });
     }
+
+    const document = doc;
+    const signers = doc.signers || [];
 
     if (document.status !== 'draft') {
       return NextResponse.json(
@@ -78,7 +64,7 @@ export async function POST(
     }
 
     // Sort signers by order_index
-    signers.sort((a, b) => a.order_index - b.order_index);
+    signers.sort((a: any, b: any) => a.order_index - b.order_index);
 
     const nowIso = new Date().toISOString();
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
@@ -88,60 +74,6 @@ export async function POST(
 
     let sentCount = 0;
 
-    if (devDb.isDevMode()) {
-      devDb.updateDocument(id, { status: 'pending', updated_at: nowIso });
-      devDb.insertAuditEvent({
-        document_id: id,
-        user_id: orgContext.userId,
-        event_type: 'document_sent',
-        metadata: {
-          signing_order: document.signing_order,
-          signer_count: signers.length,
-        },
-      });
-
-      for (let i = 0; i < signers.length; i++) {
-        const signer = signers[i];
-        const rawToken = generateSignerToken();
-        const tokenHash = hashToken(rawToken);
-        const signingUrl = `${appUrl}/sign/${rawToken}`;
-        devDb.updateSigner(signer.id, {
-          token_hash: tokenHash,
-          dev_signing_url: (!isSequential || i === 0) ? signingUrl : undefined,
-        });
-
-        if (!isSequential || i === 0) {
-          console.log(`\n======================================================`);
-          console.log(`[INVITATION DISPATCHED] For: ${signer.name} (${signer.email})`);
-          console.log(`Signing Link: ${signingUrl}`);
-          console.log(`======================================================\n`);
-
-          const emailHtml = renderInvitationEmail({
-            signerName: signer.name,
-            documentTitle: document.title,
-            organizationName: orgContext.organizationName,
-            signingUrl,
-            expiresInDays: diffDays,
-          });
-
-          await sendEmail({
-            to: signer.email,
-            subject: `Action Required: Signature requested for "${document.title}"`,
-            html: emailHtml,
-          });
-
-          sentCount++;
-        }
-      }
-
-      return NextResponse.json({
-        success: true,
-        sentCount,
-        signingOrder: document.signing_order,
-      });
-    }
-
-    const adminDb = createAdminClient();
     await (adminDb.from('documents') as any)
       .update({
         status: 'pending',
@@ -168,6 +100,7 @@ export async function POST(
         .update({ token_hash: tokenHash })
         .eq('id', signer.id);
 
+      // In sequential order, send invite only to the first signer; otherwise send to all
       if (!isSequential || i === 0) {
         const signingUrl = `${appUrl}/sign/${rawToken}`;
         const emailHtml = renderInvitationEmail({

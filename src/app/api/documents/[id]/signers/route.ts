@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
-import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 import { generateSignerToken, hashToken } from '@/lib/security/crypto';
 import { saveSignersSchema } from '@/lib/validations/document.schema';
@@ -48,14 +47,6 @@ export async function POST(
         email: s.email,
         orderIndex: s.orderIndex !== undefined ? s.orderIndex : index,
         token,
-      });
-    }
-
-    if (devDb.isDevMode()) {
-      devDb.insertSigners(signerRows);
-      return NextResponse.json({
-        success: true,
-        signers: generatedSigners,
       });
     }
 

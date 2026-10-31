@@ -6,22 +6,19 @@ export async function middleware(request: NextRequest) {
     request,
   });
 
-  // Apply Security Headers
+  // Apply Enterprise Security Headers
   supabaseResponse.headers.set('X-Content-Type-Options', 'nosniff');
   supabaseResponse.headers.set('X-Frame-Options', 'DENY');
   supabaseResponse.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  supabaseResponse.headers.set(
+    'Strict-Transport-Security',
+    'max-age=63072000; includeSubDomains; preload'
+  );
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const hasLiveSupabase = supabaseUrl && !supabaseUrl.includes('your-project-ref');
-  const devCookie = request.cookies.get('authsign_dev_user')?.value;
-
-  // In offline dev mode or with demo cookie, allow access without live Supabase login
-  if (!hasLiveSupabase || devCookie) {
-    return supabaseResponse;
-  }
 
   if (supabaseUrl && supabaseAnonKey) {
     const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
@@ -49,6 +46,8 @@ export async function middleware(request: NextRequest) {
     const isProtectedPath =
       request.nextUrl.pathname.startsWith('/dashboard') ||
       request.nextUrl.pathname.startsWith('/documents') ||
+      request.nextUrl.pathname.startsWith('/templates') ||
+      request.nextUrl.pathname.startsWith('/team') ||
       request.nextUrl.pathname.startsWith('/settings');
 
     if (!user && isProtectedPath) {

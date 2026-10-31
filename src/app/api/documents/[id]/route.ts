@@ -1,6 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { getUserOrgContext } from '@/lib/auth/get-user-org';
-import { devDb } from '@/lib/db/dev-store';
 import { createAdminClient } from '@/lib/db/supabase-admin';
 
 export async function GET(
@@ -14,14 +13,6 @@ export async function GET(
     }
 
     const { id } = await params;
-
-    if (devDb.isDevMode()) {
-      const doc = devDb.getDocumentById(id);
-      if (!doc) {
-        return NextResponse.json({ error: 'Document not found' }, { status: 404 });
-      }
-      return NextResponse.json({ document: doc });
-    }
 
     const adminDb = createAdminClient();
     const { data: document, error: docError } = await adminDb
@@ -54,7 +45,10 @@ export async function GET(
           field_id,
           method,
           signed_at,
-          ip_address
+          ip_address,
+          photo_storage_path,
+          geo_lat,
+          geo_lng
         ),
         audit_events (
           id,
@@ -90,10 +84,6 @@ export async function DELETE(
     }
 
     const { id } = await params;
-
-    if (devDb.isDevMode()) {
-      return NextResponse.json({ success: true });
-    }
 
     const adminDb = createAdminClient();
     const { error } = await adminDb
