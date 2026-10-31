@@ -4,6 +4,7 @@ export interface SendEmailParams {
   to: string;
   subject: string;
   html: string;
+  replyTo?: string;
 }
 
 export interface SendEmailResult {
@@ -16,15 +17,20 @@ export interface SendEmailResult {
  * Dispatches transactional email via Resend.
  * Gracefully falls back to console logging when RESEND_API_KEY is not configured in dev/testing.
  */
-export async function sendEmail({ to, subject, html }: SendEmailParams): Promise<SendEmailResult> {
+export async function sendEmail({
+  to,
+  subject,
+  html,
+  replyTo,
+}: SendEmailParams): Promise<SendEmailResult> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.EMAIL_FROM || 'AuthSign <onboarding@resend.dev>';
 
   if (!apiKey || apiKey.startsWith('re_123456789')) {
-    console.log(`[EMAIL SIMULATED - DEV MODE]`);
+    console.log(`[EMAIL DISPATCH - SIMULATION]`);
     console.log(`To: ${to}`);
+    if (replyTo) console.log(`Reply-To: ${replyTo}`);
     console.log(`Subject: ${subject}`);
-    console.log(`Content HTML preview: ${html.slice(0, 300)}...`);
     return {
       success: true,
       messageId: `sim_${Date.now()}`,
@@ -38,6 +44,7 @@ export async function sendEmail({ to, subject, html }: SendEmailParams): Promise
       to,
       subject,
       html,
+      replyTo,
     });
 
     if (error) {

@@ -64,6 +64,13 @@ export async function POST(
     const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(); // 14 days
     const templateFields = template.fields || [];
 
+    // Retrieve sender details
+    const { data: senderUserData } = await adminDb.auth.admin.getUserById(orgContext.userId);
+    const senderName =
+      senderUserData?.user?.user_metadata?.name ||
+      orgContext.userEmail.split('@')[0];
+    const senderEmail = orgContext.userEmail;
+
     let dispatchedCount = 0;
     const errors: string[] = [];
 
@@ -138,6 +145,8 @@ export async function POST(
           metadata: {
             source_template_id: template.id,
             bulk_campaign: true,
+            sender_name: senderName,
+            sender_email: senderEmail,
           },
         },
         {
@@ -147,24 +156,29 @@ export async function POST(
           metadata: {
             signer_email: email,
             bulk_campaign: true,
+            sender_name: senderName,
+            sender_email: senderEmail,
           },
         },
       ]);
 
-      // Dispatch invitation email with single-use secure signing URL
+      // Dispatch invitation email with single-use secure signing URL and sender attribution
       const signingUrl = `${appUrl}/sign/${rawToken}`;
       const emailHtml = renderInvitationEmail({
         signerName: name,
         documentTitle: template.template_name || template.title,
         organizationName: orgContext.organizationName,
+        senderName,
+        senderEmail,
         signingUrl,
         expiresInDays: 14,
       });
 
       await sendEmail({
         to: email,
-        subject: `Action Required: Signature requested for "${template.template_name || template.title}"`,
+        subject: `Action Required: Signature requested by ${senderName} for "${template.template_name || template.title}"`,
         html: emailHtml,
+        replyTo: senderEmail,
       });
 
       dispatchedCount++;

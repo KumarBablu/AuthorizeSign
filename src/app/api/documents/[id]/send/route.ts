@@ -25,6 +25,7 @@ export async function POST(
         status,
         signing_order,
         expires_at,
+        created_by,
         signers (
           id,
           name,
@@ -72,6 +73,13 @@ export async function POST(
     const diffDays = Math.max(1, Math.ceil((expiresAtDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
     const isSequential = document.signing_order === 'sequential';
 
+    // Retrieve sender profile
+    const { data: senderUserData } = await adminDb.auth.admin.getUserById(orgContext.userId);
+    const senderName =
+      senderUserData?.user?.user_metadata?.name ||
+      orgContext.userEmail.split('@')[0];
+    const senderEmail = orgContext.userEmail;
+
     let sentCount = 0;
 
     await (adminDb.from('documents') as any)
@@ -88,6 +96,8 @@ export async function POST(
       metadata: {
         signing_order: document.signing_order,
         signer_count: signers.length,
+        sender_name: senderName,
+        sender_email: senderEmail,
       },
     });
 
@@ -107,14 +117,17 @@ export async function POST(
           signerName: signer.name,
           documentTitle: document.title,
           organizationName: orgContext.organizationName,
+          senderName,
+          senderEmail,
           signingUrl,
           expiresInDays: diffDays,
         });
 
         await sendEmail({
           to: signer.email,
-          subject: `Action Required: Signature requested for "${document.title}"`,
+          subject: `Action Required: Signature requested by ${senderName} for "${document.title}"`,
           html: emailHtml,
+          replyTo: senderEmail,
         });
 
         sentCount++;

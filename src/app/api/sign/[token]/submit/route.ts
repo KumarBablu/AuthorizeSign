@@ -65,6 +65,20 @@ export async function POST(
     const org = doc.organizations;
     const orgName = org?.name || 'the organization';
 
+    // Retrieve original sender profile
+    let senderName = 'Document Sender';
+    let senderEmail = 'sender@organization.local';
+    if (doc.created_by) {
+      const { data: senderData } = await adminDb.auth.admin.getUserById(doc.created_by);
+      if (senderData?.user) {
+        senderEmail = senderData.user.email || senderEmail;
+        senderName =
+          senderData.user.user_metadata?.name ||
+          senderData.user.email?.split('@')[0] ||
+          senderName;
+      }
+    }
+
     // Check expiration
     if (new Date(doc.expires_at).getTime() < Date.now() || doc.status === 'expired') {
       return NextResponse.json(
@@ -253,13 +267,14 @@ export async function POST(
         }
       });
 
-      // Prepare signer info for the certificate
+      // Prepare signer info for the certificate and email audit summary
       const certSigners = [];
+      const auditSummaryList = [];
+
       for (const s of totalSigners) {
         const sigRecord = sigMap.get(s.id);
         let photoBase64: string | undefined = undefined;
 
-        // If this is the current signer and we have photo base64
         if (s.id === signer.id && validated.data.signerPhotoBase64) {
           photoBase64 = validated.data.signerPhotoBase64;
         } else if (sigRecord?.photo_storage_path) {
@@ -271,13 +286,15 @@ export async function POST(
           }
         }
 
+        const signerSignedAt = s.signed_at || nowIso;
+
         certSigners.push({
           name: s.name,
           email: s.email,
           orderIndex: s.order_index,
           verificationMethod: 'email_otp',
           signatureMethod: validated.data.signatureMethod,
-          signedAt: s.signed_at || nowIso,
+          signedAt: signerSignedAt,
           ipAddress: sigRecord?.ip_address || ip,
           photoBase64,
           geoLocation:
@@ -290,6 +307,13 @@ export async function POST(
               : geo && s.id === signer.id
               ? geo
               : undefined,
+        });
+
+        auditSummaryList.push({
+          name: s.name,
+          email: s.email,
+          signedAt: new Date(signerSignedAt).toUTCString(),
+          ipAddress: sigRecord?.ip_address || ip,
         });
       }
 
@@ -327,30 +351,65 @@ export async function POST(
           signed_sha256: finalSha256,
           total_signers: totalSigners.length,
           completed_at: nowIso,
+          sender_email: senderEmail,
         },
       });
 
-      // Email completed document link to all signers
       const downloadUrl = `/api/documents/${doc.id}/download?type=signed`;
-      for (const s of totalSigners) {
-        const completedEmailHtml = renderCompletedEmail({
-          recipientName: s.name,
+      const fullDownloadUrl = `${appUrl}${downloadUrl}`;
+      const verifyUrl = `${appUrl}/verify`;
+
+      // 1. Email completed document and audit trail to the SENDER
+      if (senderEmail) {
+        const senderCompletedHtml = renderCompletedEmail({
+          recipientName: senderName,
+          recipientRole: 'sender',
           documentTitle: doc.title,
-          downloadUrl: `${appUrl}${downloadUrl}`,
+          downloadUrl: fullDownloadUrl,
           completedAt: formattedDate,
+          originalSha256: doc.original_sha256,
+          signedSha256: finalSha256,
+          signers: auditSummaryList,
+          senderName,
+          senderEmail,
+          verifyUrl,
+        });
+
+        await sendEmail({
+          to: senderEmail,
+          subject: `Executed & Certified: "${doc.title}" has been signed by all parties`,
+          html: senderCompletedHtml,
+        });
+      }
+
+      // 2. Email completed document and audit trail to ALL SIGNATORIES
+      for (const s of totalSigners) {
+        const signerCompletedHtml = renderCompletedEmail({
+          recipientName: s.name,
+          recipientRole: 'signer',
+          documentTitle: doc.title,
+          downloadUrl: fullDownloadUrl,
+          completedAt: formattedDate,
+          originalSha256: doc.original_sha256,
+          signedSha256: finalSha256,
+          signers: auditSummaryList,
+          senderName,
+          senderEmail,
+          verifyUrl,
         });
 
         await sendEmail({
           to: s.email,
-          subject: `Completed & Executed: "${doc.title}"`,
-          html: completedEmailHtml,
+          subject: `Signed Copy & Audit Certificate: "${doc.title}"`,
+          html: signerCompletedHtml,
+          replyTo: senderEmail,
         });
       }
 
       return NextResponse.json({
         success: true,
         isCompleted: true,
-        message: 'Document has been signed and completed.',
+        message: 'Document has been signed and completed. Executed copies delivered to sender and signers.',
         downloadUrl,
       });
     } else {
@@ -386,14 +445,17 @@ export async function POST(
             signerName: nextSigner.name,
             documentTitle: doc.title,
             organizationName: orgName,
+            senderName,
+            senderEmail,
             signingUrl: nextSigningUrl,
             expiresInDays: diffDays,
           });
 
           await sendEmail({
             to: nextSigner.email,
-            subject: `Action Required: It's your turn to sign "${doc.title}"`,
+            subject: `Action Required: It's your turn to sign "${doc.title}" (Invited by ${senderName})`,
             html: nextEmailHtml,
+            replyTo: senderEmail,
           });
         }
       }
